@@ -39,17 +39,41 @@
     return Math.max(0, Math.round(days)) + 'd';
   }
 
-  // The fitted value model, recomputed from the row: ln(implied value) = intercept +
-  // log_tvl * ln(TVL) + tanh_growth * tanh(growth/30) + age_years * age in years, with the
-  // coefficients data.js carries. The growth term is fitted at about zero on the cleaned
-  // pool (radar-4's negative sign was the CEX protocols in its pool); age is negative.
+  // The fitted value model, recomputed from the row: the same rule lib/model.ts uses,
+  // with the kept model's beta and feature shape from data.js, so the page and the
+  // board can never drift apart. Base and ridge models are the four terms
+  // (intercept, log TVL, tanh growth, age); the ratio model prices log(mcap/TVL) and
+  // adds log TVL back; the interaction model adds (ln TVL - mean) x age and its
+  // square; the category-slope model lets each category carry its own TVL slope.
   function ageYearsOf(row) {
     return (row.age_days === null || row.age_days === undefined ? fit.validation.median_age_days : row.age_days) / 365;
   }
-  function logValueOf(row) {
+  function modelInputsOf(row) {
     var growth = Math.min(1000, Math.max(-95, row.change_7d === null || row.change_7d === undefined ? 0 : row.change_7d));
-    var tanhGrowth = Math.tanh(growth / 30);
-    return c.intercept + c.log_tvl * Math.log(Math.max(1, row.tvl_usd)) + c.tanh_growth * tanhGrowth + c.age_years * ageYearsOf(row);
+    return {
+      logTvl: Math.log(Math.max(1, row.tvl_usd)),
+      tanhGrowth: Math.tanh(growth / 30),
+      ageYears: ageYearsOf(row)
+    };
+  }
+  function logValueOf(row) {
+    var terms = valueTermsOf(row);
+    var sum = 0;
+    for (var i = 0; i < terms.length; i++) sum += terms[i][1];
+    return sum;
+  }
+  /** The value's term-by-term breakdown for the detail drawer. The kept model is the
+   * four-term regression (base, or its ridge twin, which has the same shape), so the
+   * terms are its four coefficients; a future kept shape adds its terms here. */
+  function valueTermsOf(row) {
+    var beta = fit.beta || [c.intercept, c.log_tvl, c.tanh_growth, c.age_years];
+    var inp = modelInputsOf(row);
+    return [
+      ['ln(TVL) = ln(' + fmtUsd(row.tvl_usd) + ') x ' + beta[1].toFixed(3), beta[1] * inp.logTvl],
+      ['tanh(7d ' + fmtPct(row.change_7d) + ' / 30) x ' + beta[2].toFixed(3), beta[2] * inp.tanhGrowth],
+      ['age ' + inp.ageYears.toFixed(1) + ' years x ' + beta[3].toFixed(3), beta[3] * inp.ageYears],
+      ['intercept', beta[0]]
+    ];
   }
   function impliedOf(row) {
     return Math.max(1, Math.round(Math.exp(logValueOf(row))));
@@ -368,7 +392,7 @@
     return h('div', { class: 'panel' },
       h('div', { class: 'table-wrap' },
         h('table', null,
-          h('caption', { class: 'sub', text: 'Pre-token protocols, strongest implied value first. Select a row for its model, launch odds and farm plan.' }),
+          h('caption', { class: 'sub', text: 'Pre-token protocols, strongest implied value first. Sort by Farm net EV to rank by what a farm is worth after its costs, not by the headline value. Select a row for its model, launch odds and farm plan.' }),
           h('thead', null, h('tr', null,
             sortHeader('implied', 'Rank'),
             sortHeader('name', 'Protocol'),
@@ -377,7 +401,7 @@
             sortHeader('age', 'Age'),
             sortHeader('implied', 'Implied value'),
             sortHeader('odds', 'Launch odds'),
-            sortHeader('expected', 'Expected value'),
+            sortHeader('expected', 'Farm net EV'),
             h('th', { scope: 'col', text: 'Status' })
           )),
           tbody
@@ -447,6 +471,41 @@
     return host;
   }
 
+  /** The fitted equation as one line, per the kept model's feature shape. */
+  /** The fitted equation as one line. The kept model is the four-term regression (or
+   * its ridge twin, which has the same shape); a future kept shape writes its own line here. */
+  function formulaText() {
+    var beta = fit.beta || [c.intercept, c.log_tvl, c.tanh_growth, c.age_years];
+    var f = function (n) { return (n >= 0 ? '+ ' : '- ') + Math.abs(n).toFixed(3); };
+    var ridge = fit.features && fit.features.indexOf('ridge-') === 0 ? ' (ridge lambda ' + fit.features.slice(6) + ')' : '';
+    return 'ln(implied value) = ' + beta[0].toFixed(3) + ' ' + f(beta[1]) + ' ln(TVL) ' + f(beta[2]) + ' tanh(7d growth / 30) ' + f(beta[3]) + ' age in years' + ridge;
+  }
+
+  /** The model's terms for the panel table. The kept model is the four-term regression. */
+  function modelTermRows() {
+    var beta = fit.beta || [c.intercept, c.log_tvl, c.tanh_growth, c.age_years];
+    return [
+      ['intercept', beta[0], 'The level: at TVL $1, flat growth, age zero, the price would be e^' + beta[0].toFixed(2) + '. Read with the other terms, not alone.'],
+      ['ln(TVL)', beta[1], 'Doubling TVL lifts the fitted value by about ' + Math.round((Math.pow(2, beta[1]) - 1) * 100) + '%. Sub-linear: size matters, but not one for one.'],
+      ['tanh(7d growth / 30)', beta[2], 'A hot week carries almost no signal on the cleaned pool. Radar-4 read -1.78 here; that sign was the exchange tokens in its pool, not the market.'],
+      ['age in years', beta[3], 'Each extra year shaves about ' + Math.round((1 - Math.exp(beta[3])) * 100) + '% off the fitted value once TVL is in: an old protocol that still has no token is discounted.']
+    ];
+  }
+
+
+  /** What the five-split search decided, in one honest sentence. */
+  function fiveSplitNote() {
+    var v = fit.validation;
+    var rows = v.five_split || [];
+    if (!rows.length) return 'No stability search was run for this model.';
+    var kept = rows.filter(function (s) { return s.kept; })[0];
+    if (kept) return 'Kept model: ' + kept.name + ' — it won ' + kept.wins + ' of 5 splits and moved ' + kept.rank_moves_over_10 + ' rows by more than ten ranks, clearing both bars. The base four-term model it replaces is retired, not hidden: its numbers are the first row of the table.';
+    var best = rows.slice().sort(function (a, b) { return b.wins - a.wins || a.mean_median - b.mean_median; })[0];
+    var lo = Math.min.apply(null, rows[0].base_medians);
+    var hi = Math.max.apply(null, rows[0].base_medians);
+    return 'No candidate cleared both bars, so the board keeps the base four-term model. Closest was ' + best.name + ': ' + best.wins + ' of 5 split wins and ' + best.rank_moves_over_10 + ' rows moved by more than ten ranks. A single split can flatter a fragile term — the base medians spread from ' + lo.toFixed(2) + ' to ' + hi.toFixed(2) + ' across quintiles — so the search asks for four wins and a quiet board before it lets a richer model in.';
+  }
+
   function modelPanel() {
     var v = fit.validation;
     var odds = DATA.odds;
@@ -460,12 +519,14 @@
     odds.categories.forEach(function (cat, i) {
       oddsTerms.push([cat + ' (vs ' + odds.reference_category + ')', odds.coefficients[4 + i], 'Category shift in log-odds against the reference category ' + odds.reference_category + '.']);
     });
-    var termRows = [
-      ['intercept', c.intercept, 'The level: a protocol at TVL $1, flat growth, age zero would price at e^' + c.intercept.toFixed(2) + '. Read with the other terms, not alone.'],
-      ['ln(TVL)', c.log_tvl, 'Doubling TVL lifts the fitted value by about ' + Math.round((Math.pow(2, c.log_tvl) - 1) * 100) + '%. Sub-linear: size matters, but not one for one.'],
-      ['tanh(7d growth / 30)', c.tanh_growth, 'A hot week carries almost no signal on the cleaned pool. Radar-4 read −1.78 here; that sign was the exchange tokens in its pool, not the market.'],
-      ['age in years', c.age_years, 'Each extra year shaves about ' + Math.round((1 - Math.exp(c.age_years)) * 100) + '% off the fitted value once TVL is in: an old protocol that still has no token is discounted.']
-    ];
+    if (odds.features === 'extended') {
+      var nCat = odds.categories.length;
+      oddsTerms.push(['log1p(chain count)', odds.coefficients[4 + nCat], 'Each extra chain raises the log-odds: a protocol live on more chains launches more often.']);
+      odds.categories.forEach(function (cat, i) {
+        oddsTerms.push([cat + ' x age (vs ' + odds.reference_category + ')', odds.coefficients[5 + nCat + i], 'How fast this category\u2019s launch rate rises with age, against the reference category.']);
+      });
+    }
+    var termRows = modelTermRows();
     var validRows = [
       ['Random 80/20 split', v.train_size + ' train / ' + v.test_size + ' test, by slug hash', v.test_median_abs_log_error, v.test_mean_abs_log_error, v.test_r2],
       ['Leave-one-category-out', v.loco_protocols + ' protocols held out whole, ' + v.loco_categories + ' categories', v.loco_median_abs_log_error, v.loco_mean_abs_log_error, v.loco_r2],
@@ -475,7 +536,7 @@
       h('h2', { text: 'How the implied value is fitted — and how it is checked' }),
       h('p', { class: 'sub', text: 'The model is one linear regression, fitted at runtime on the ' + v.pool_size + ' live-token protocols that have a market cap, a TVL, a 7-day change and a listing date. Centralised exchanges are set aside from the fit (' + v.pool_excluded_cex + ' protocols): an exchange token prices the exchange, not the TVL on its books, and the board never scores an exchange. The target is log market cap. The fit reports its own held-out numbers, and the board uses the same fit for every row.' }),
       h('div', { class: 'formula' },
-        h('div', null, h('b', { text: 'ln(implied value)' }), ' = ' + c.intercept.toFixed(3) + ' + ' + c.log_tvl.toFixed(3) + ' ln(TVL) + ' + c.tanh_growth.toFixed(3) + ' tanh(7d growth / 30) + ' + c.age_years.toFixed(3) + ' age in years')
+        h('div', null, h('b', { text: formulaText() }))
       ),
       h('div', { class: 'diag' },
         h('div', null,
@@ -500,8 +561,26 @@
               );
             }))
           ),
-          h('p', { class: 'note', text: 'Train R² ' + v.train_r2.toFixed(2) + '. The held-out R² values sit near or below zero because one or two protocols carry market caps that ignore TVL entirely (a token locker at 19x its TVL, an allocator at 0.6% of it); squares let those two dominate, so the median is the robust read. The value model is unchanged from radar-5: the same four terms, fitted on the same pool, so the medians are the same as radar-5\u2019s (0.95 random, 0.82 by category, 0.97 leave-one-out). Radar-6 tried fourteen alternatives to beat it and kept none; they are listed below.' })
+          h('p', { class: 'note', text: 'Train R² ' + v.train_r2.toFixed(2) + '. The held-out R² values sit near or below zero because one or two protocols carry market caps that ignore TVL entirely (a token locker at 19x its TVL, an allocator at 0.6% of it); squares let those two dominate, so the median is the robust read. ' + (fit.features === 'base' ? 'The value model is unchanged from radar-5: the same four terms, fitted on the same pool, so the medians are the same as radar-5\u2019s (0.95 random, 0.82 by category, 0.97 leave-one-out). Radar-6 tried fourteen alternatives to beat it and kept none; radar-7 re-tested the close calls on five splits and kept none either — see the table below.' : 'The kept model is ' + v.kept_model + ': it cleared the five-split search below, so these medians are its own, not the base model\u2019s.') })
         )
+      ),
+      h('div', null,
+        h('h3', { text: 'Five-split stability search: would a richer model survive five splits?' }),
+        h('p', { class: 'sub', text: 'Each candidate is fitted on four hash quintiles and tested on the fifth, five times over. A candidate replaces the base model only when it wins the median |log error| on at least four of the five splits AND moves fewer than 20 of the 203 board rows by more than ten ranks. The base model\u2019s split medians are ' + (v.five_split && v.five_split.length ? v.five_split[0].base_medians.map(function (m) { return m.toFixed(2); }).join(' / ') : '—') + '.' }),
+        h('table', { class: 'diag-table' },
+          h('thead', null, h('tr', null, h('th', { scope: 'col', text: 'Candidate' }), h('th', { scope: 'col', text: 'Split medians' }), h('th', { scope: 'col', text: 'Wins' }), h('th', { scope: 'col', text: 'Mean' }), h('th', { scope: 'col', text: 'Rows moved >10' }), h('th', { scope: 'col', text: 'Kept?' }))),
+          h('tbody', null, (v.five_split || []).map(function (s) {
+            return h('tr', null,
+              h('td', null, h('b', { text: s.name })),
+              h('td', { class: 'num', text: s.split_medians.map(function (m) { return m.toFixed(2); }).join(' / ') }),
+              h('td', { class: 'num', text: s.wins + ' / 5' }),
+              h('td', { class: 'num', text: s.mean_median.toFixed(2) }),
+              h('td', { class: 'num', text: String(s.rank_moves_over_10) }),
+              h('td', { class: 'num', text: s.kept ? 'kept' : 'no' })
+            );
+          }))
+        ),
+        h('p', { class: 'note', text: fiveSplitNote() })
       ),
       h('div', null,
         h('h3', { text: 'Calibration: leave-one-out predictions vs actual market caps' }),
@@ -516,7 +595,7 @@
       ),
       h('div', null,
         h('h3', { text: 'Launch odds: a logistic model, not a table' }),
-        h('p', { class: 'sub', text: 'Radar-5 read launch odds off an age-bucket by TVL-tier table. Radar-6 fits one logistic regression per protocol on launch (issued a token or not) over all 758 snapshot protocols, with age, log TVL, 7-day growth and category as features, and validates it against the old table on held-out splits. The logistic wins on Brier score on every one of the five hash quintiles, so the board carries the logistic odds.' }),
+        h('p', { class: 'sub', text: 'Radar-5 read launch odds off an age-bucket by TVL-tier table. Radar-6 fits one logistic regression per protocol on launch (issued a token or not) over all 758 snapshot protocols, with age, log TVL, 7-day growth and category as features, and validates it against the old table on held-out splits. Radar-7 tries two more features — how many chains a protocol runs on, and a category-by-age interaction — and keeps them only when the five-fold Brier score improves: ' + (odds.features === 'extended' ? 'it does, ' + ov.five_fold_extended_logistic_brier.toFixed(3) + ' against the plain logistic\u2019s ' + ov.five_fold_logistic_brier.toFixed(3) + ', so the board carries the extended odds.' : 'it does not (' + ov.five_fold_extended_logistic_brier.toFixed(3) + ' against the plain logistic\u2019s ' + ov.five_fold_logistic_brier.toFixed(3) + '), so the board keeps the plain logistic odds.') }),
         h('table', { class: 'diag-table' },
           h('thead', null, h('tr', null, h('th', { scope: 'col', text: 'Term' }), h('th', { scope: 'col', text: 'Coefficient' }), h('th', { scope: 'col', text: 'What it says' }))),
           h('tbody', null, oddsTerms.map(function (r) {
@@ -524,13 +603,15 @@
           }))
         ),
         h('table', { class: 'diag-table' },
-          h('thead', null, h('tr', null, h('th', { scope: 'col', text: 'Held-out check' }), h('th', { scope: 'col', text: 'Brier, logistic' }), h('th', { scope: 'col', text: 'Brier, old table' }), h('th', { scope: 'col', text: 'Brier, global rate' }))),
+          h('thead', null, h('tr', null, h('th', { scope: 'col', text: 'Odds model' }), h('th', { scope: 'col', text: 'Brier, fixed split' }), h('th', { scope: 'col', text: 'Brier, five-fold' }), h('th', { scope: 'col', text: 'Log loss, fixed' }))),
           h('tbody', null,
-            h('tr', null, h('td', null, h('b', { text: 'Fixed 80/20 split' }), h('div', { class: 'sub', text: ov.test_size + ' protocols held out' })), h('td', { class: 'num', text: ov.logistic_brier.toFixed(3) }), h('td', { class: 'num', text: ov.table_brier.toFixed(3) }), h('td', { class: 'num', text: ov.global_brier.toFixed(3) })),
-            h('tr', null, h('td', null, h('b', { text: 'Five-fold mean' }), h('div', { class: 'sub', text: 'each hash quintile held out in turn' })), h('td', { class: 'num', text: ov.five_fold_logistic_brier.toFixed(3) }), h('td', { class: 'num', text: ov.five_fold_table_brier.toFixed(3) }), h('td', { class: 'num', text: '—' }))
+            h('tr', null, h('td', null, h('b', { text: 'Logistic (age, size, growth, category)' })), h('td', { class: 'num', text: ov.logistic_brier.toFixed(3) }), h('td', { class: 'num', text: ov.five_fold_logistic_brier.toFixed(3) }), h('td', { class: 'num', text: ov.logistic_logloss.toFixed(3) })),
+            h('tr', null, h('td', null, h('b', { text: 'Extended logistic (+ chains, category x age)' })), h('td', { class: 'num', text: ov.extended_logistic_brier.toFixed(3) }), h('td', { class: 'num', text: ov.five_fold_extended_logistic_brier.toFixed(3) }), h('td', { class: 'num', text: ov.extended_logistic_logloss.toFixed(3) })),
+            h('tr', null, h('td', null, h('b', { text: 'Old age-by-TVL table' })), h('td', { class: 'num', text: ov.table_brier.toFixed(3) }), h('td', { class: 'num', text: ov.five_fold_table_brier.toFixed(3) }), h('td', { class: 'num', text: ov.table_logloss.toFixed(3) })),
+            h('tr', null, h('td', null, h('b', { text: 'Global launch rate alone' })), h('td', { class: 'num', text: ov.global_brier.toFixed(3) }), h('td', { class: 'num', text: '—' }), h('td', { class: 'num', text: '—' }))
           )
         ),
-        h('p', { class: 'note', text: 'Lower Brier is better. On the fixed split the logistic scores ' + ov.logistic_brier.toFixed(3) + ' against the table’s ' + ov.table_brier.toFixed(3) + ' (log loss ' + ov.logistic_logloss.toFixed(3) + ' vs ' + ov.table_logloss.toFixed(3) + '); the global launch rate alone scores ' + ov.global_brier.toFixed(3) + '. Board odds run from the logistic model; a protocol with no listing date takes the pool’s median age (' + Math.round(odds.median_age_days) + ' days), the same imputation the fit uses.' })
+        h('p', { class: 'note', text: 'Lower Brier is better. The board carries the ' + (odds.features === 'extended' ? 'extended' : 'plain') + ' logistic: five-fold Brier ' + (odds.features === 'extended' ? ov.five_fold_extended_logistic_brier.toFixed(3) : ov.five_fold_logistic_brier.toFixed(3)) + ' against the old table\u2019s ' + ov.five_fold_table_brier.toFixed(3) + ' and the global rate\u2019s ' + ov.global_brier.toFixed(3) + ' on the fixed split. A protocol with no listing date takes the pool\u2019s median age (' + Math.round(odds.median_age_days) + ' days), the same imputation the fit uses.' })
       ),
       h('p', { class: 'sub', text: 'The model is rough — the median held-out miss is about a factor of ' + Math.exp(v.test_median_abs_log_error).toFixed(1) + 'x — so treat each implied value as an order of magnitude, not a price.' })
     );
@@ -547,9 +628,6 @@
     dialog.textContent = '';
     var steps = farmSteps(row);
     var recomputed = impliedOf(row);
-    var growth = row.change_7d === null || row.change_7d === undefined ? 0 : Math.min(1000, Math.max(-95, row.change_7d));
-    var tanhGrowth = Math.tanh(growth / 30);
-    var ageYears = ageYearsOf(row);
     var logVal = logValueOf(row);
     dialog.appendChild(h('div', { class: 'detail-head' },
       h('div', null,
@@ -562,10 +640,9 @@
     dialog.appendChild(h('section', { class: 'detail-section' },
       h('h3', { text: 'Implied value, fitted' }),
       h('div', { class: 'equation' },
-        h('div', null, h('span', { text: 'ln(TVL) = ln(' + fmtUsd(row.tvl_usd) + ') x ' + c.log_tvl.toFixed(3) }), h('b', { class: 'num', text: (c.log_tvl * Math.log(Math.max(1, row.tvl_usd))).toFixed(2) })),
-        h('div', null, h('span', { text: 'tanh(7d ' + fmtPct(row.change_7d) + ' / 30) x ' + c.tanh_growth.toFixed(3) }), h('b', { class: 'num', text: (c.tanh_growth * tanhGrowth).toFixed(2) })),
-        h('div', null, h('span', { text: 'age ' + ageYears.toFixed(1) + ' years x ' + c.age_years.toFixed(3) }), h('b', { class: 'num', text: (c.age_years * ageYears).toFixed(2) })),
-        h('div', null, h('span', { text: 'intercept' }), h('b', { class: 'num', text: c.intercept.toFixed(3) })),
+        valueTermsOf(row).map(function (t) {
+          return h('div', null, h('span', { text: t[0] }), h('b', { class: 'num', text: t[1].toFixed(2) }));
+        }),
         h('div', null, h('span', { text: 'ln(implied value)' }), h('b', { class: 'num', text: logVal.toFixed(2) })),
         h('div', null, h('span', { text: 'implied value' }), h('b', { class: 'num', text: fmtUsd(row.implied_value_usd) })),
         h('div', null, h('span', { text: 'launch odds, from peers' }), h('b', { class: 'num', text: Math.round(row.launch_odds * 100) + '%' })),
@@ -573,7 +650,7 @@
         h('div', null, h('span', { text: 'total farm costs' }), h('b', { class: 'num', text: '$' + row.total_cost_usd })),
         h('div', { class: 'net-ev' }, h('span', { text: 'net expected value, after all costs' }), h('b', { class: 'num', text: fmtUsd(row.expected_value_usd) }))
       ),
-      h('p', { class: 'note', text: 'Model ' + fit.version + ': the same fit scores every protocol. The page recomputes this row as ' + fmtUsd(recomputed) + (recomputed === row.implied_value_usd ? ', the same number board.json carries.' : ', which differs from the board: the data would be stale.') + ' Odds come from a logistic regression fitted on all 758 snapshot protocols (age, log TVL, 7-day growth, category), not from a guess: older protocols launch more often, and a hot week argues against it.' })
+      h('p', { class: 'note', text: 'Model ' + fit.version + ': the same fit scores every protocol. The page recomputes this row as ' + fmtUsd(recomputed) + (recomputed === row.implied_value_usd ? ', the same number board.json carries.' : ', which differs from the board: the data would be stale.') + ' Odds come from a logistic regression fitted on all 758 snapshot protocols (age, log TVL, 7-day growth, category' + (DATA.odds.features === 'extended' ? ', chain count, category-by-age' : '') + '), not from a guess: older protocols launch more often, and a hot week argues against it.' })
     ));
     dialog.appendChild(h('section', { class: 'detail-section' },
       h('h3', { text: 'Farm plan' }),
