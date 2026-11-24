@@ -1,4 +1,4 @@
-// Token Radar's dashboard, radar-4. It reads window.RADAR (written beside dashboard/ by main.ts)
+// Token Radar's dashboard, radar-5. It reads window.RADAR (written beside dashboard/ by main.ts)
 // and renders the ranked board, a filterable table, a per-protocol detail drawer with the model's
 // own inputs and the protocol's farm plan, and the live-token protocols set aside below.
 // No network: every byte it shows is in data.js.
@@ -39,15 +39,16 @@
     return Math.max(0, Math.round(days)) + 'd';
   }
 
-  // The fitted value model, recomputed from the row: ln(implied value) = 7.951 + 0.464 ln(TVL)
-  // - 1.783 tanh(growth/60) - 0.078 age in years. No sector term: the fit's held-out test says a
-  // sector multiple makes it worse, so the board carries none.
+  // The fitted value model, recomputed from the row: ln(implied value) = intercept +
+  // log_tvl * ln(TVL) + tanh_growth * tanh(growth/30) + age_years * age in years, with the
+  // coefficients data.js carries. The growth term is fitted at about zero on the cleaned
+  // pool (radar-4's negative sign was the CEX protocols in its pool); age is negative.
   function ageYearsOf(row) {
     return (row.age_days === null || row.age_days === undefined ? fit.validation.median_age_days : row.age_days) / 365;
   }
   function logValueOf(row) {
     var growth = Math.min(1000, Math.max(-95, row.change_7d === null || row.change_7d === undefined ? 0 : row.change_7d));
-    var tanhGrowth = Math.tanh(growth / 60);
+    var tanhGrowth = Math.tanh(growth / 30);
     return c.intercept + c.log_tvl * Math.log(Math.max(1, row.tvl_usd)) + c.tanh_growth * tanhGrowth + c.age_years * ageYearsOf(row);
   }
   function impliedOf(row) {
@@ -139,18 +140,44 @@
     if (s.length < 20) s = s + " Hold the position and check the protocol's own page.";
     return s;
   }
+  function secondFor(p, chain) {
+    var c = (p.category || '').toLowerCase();
+    var name = p.name;
+    if (c.indexOf('lend') >= 0 || c.indexOf('cdp') >= 0 || c.indexOf('collateral') >= 0) return 'Supply a second, smaller asset to ' + name + ' on ' + chain + ', so the wallet shows two markets used instead of one.';
+    if (c.indexOf('dex') >= 0 || c.indexOf('leveraged farm') >= 0) return 'Add a small position to a second pool on ' + name + ', on ' + chain + ' if it lists one, and leave it in range.';
+    if (c.indexOf('perpetual') >= 0 || c.indexOf('derivative') >= 0 || c.indexOf('options') >= 0) return 'Open one small spot hedge beside the ' + name + ' position, so the wallet is not a single-trade account.';
+    if (c.indexOf('prediction') >= 0) return 'Resolve one settled market on ' + name + ' and claim the winnings, so the wallet shows a completed round.';
+    if (c.indexOf('yield aggregator') >= 0 || c.indexOf('yield') >= 0) return 'Deposit a small amount into a second ' + name + ' vault, so the wallet holds two vault shares.';
+    if (c.indexOf('curator') >= 0 || c.indexOf('allocator') >= 0) return 'Allocate a small amount to a second ' + name + ' vault with a different strategy, and hold both.';
+    if (c.indexOf('restak') >= 0 || c.indexOf('staking') >= 0) return 'Stake a second, smaller amount through ' + name + ' on ' + chain + ', keeping both receipt tokens in the same wallet.';
+    if (c.indexOf('stable') >= 0) return 'Hold a second stable asset minted through ' + name + ', so the wallet shows more than one mint.';
+    if (c.indexOf('rwa') >= 0) return 'Mint a second, smaller ' + name + ' asset in another tenor, and hold both to the end of the hold.';
+    return 'Take one more distinct action in the ' + name + ' app, such as voting, staking or a second deposit, so the wallet is not a one-transaction account.';
+  }
+  function totalCostFor(p) {
+    var capital = capitalFor(p);
+    var gas = capital >= 150 ? 8 : 4;
+    var hold = holdDaysFor(p.age_days);
+    var weeks = Math.max(1, Math.ceil(hold / 7));
+    var weeklyGas = 2 * weeks;
+    return { capital: capital, gas: gas, weeks: weeks, weeklyGas: weeklyGas, total: capital + gas + 3 + weeklyGas + 5 };
+  }
   function farmSteps(p) {
     var chains = chainsText(p);
     var capital = capitalFor(p);
     var hold = holdDaysFor(p.age_days);
-    var gas = capital >= 150 ? 8 : 4;
+    var cost = totalCostFor(p);
+    var gross = p.gross_expected_value_usd;
     return [
-      { text: openingFor(p, capital, chains), cost: '$' + capital + ' of capital and about $' + gas + ' of gas', time: '15 minutes to set up' },
+      { text: openingFor(p, capital, chains), cost: '$' + capital + ' of capital and about $' + cost.gas + ' of gas', time: '15 minutes to set up' },
       { text: 'Open a fresh wallet that holds only the funds you plan to farm, and store its seed phrase offline.', cost: 'under $3 of gas for the first transaction', time: '5 minutes' },
       { text: weeklyFor(p, chainOf(p)), cost: 'about $2 of gas a week', time: '10 minutes a week' },
+      { text: secondFor(p, chainOf(p)), cost: 'about $2 of gas', time: '10 minutes a week' },
       { text: 'Hold the position for at least ' + hold + ' days, so the activity is counted in more than one snapshot.', cost: 'the $' + capital + ' stays in the position', time: hold + ' days' },
       { text: "Before you withdraw, open the protocol's own points page from the link in its official docs and check the claim there; never connect your wallet to a link from a DM or a search ad.", cost: 'no fee to check, and never pay to claim', time: '10 minutes' },
-      { text: 'Rough expected value: ' + shortUsd(p.implied_value_usd) + ' implied value times ' + Math.round(p.launch_odds * 100) + '% launch odds is about ' + shortUsd(p.expected_value_usd) + ', minus about $' + (capital + gas + 5) + ' of capital and gas, a wide range, and only a slice of it would ever reach one wallet.', cost: 'about $' + (capital + gas + 5) + ' at stake', time: 'no extra time' },
+      { text: 'Net expected value: ' + shortUsd(p.implied_value_usd) + ' implied value times ' + Math.round(p.launch_odds * 100) + '% launch odds is about ' + shortUsd(gross) + ' gross, minus $' + cost.total + ' of costs ($' + capital + ' capital at stake, $' + cost.gas + ' setup gas, $' + cost.weeklyGas + ' weekly gas over ' + cost.weeks + ' weeks, $5 buffer), leaving about ' + shortUsd(p.expected_value_usd) + ' net — a wide range, and only a slice of it would ever reach one wallet.', cost: '$' + cost.total + ' of costs against ' + shortUsd(gross) + ' gross', time: 'no extra time' },
+      { text: 'Plan the exit before the claim opens: withdraw the position in two or three tranches once the points page shows a claim, keep a small position until the claim is confirmed, and leave enough gas on ' + chainOf(p) + ' to claim.', cost: 'about $4 of gas to unwind', time: '20 minutes' },
+      { text: "On claim day, open the claim from the protocol's own site, check the claim window and the token contract against the official docs, and never pay anyone to claim for you.", cost: 'claim gas only, about $3', time: '15 minutes' },
       { text: 'Farm from one wallet only: splitting the same activity across many wallets is the pattern airdrop filters flag as Sybil, and it can void the whole position.', cost: 'nothing to do right, everything to lose by splitting', time: 'no extra time' }
     ].map(stepText);
   }
@@ -235,6 +262,8 @@
         h('div', { class: 'fact' }, h('span', { text: 'Watchlist covered' }), h('b', { text: DATA.audit.watchlist_covered + ' / ' + DATA.audit.watchlist_size })),
         h('div', { class: 'fact' }, h('span', { text: 'Pre-token rows scored' }), h('b', { text: String(DATA.board_size) })),
         h('div', { class: 'fact' }, h('span', { text: 'Fitted model, test error' }), h('b', { text: 'median |log error| ' + v.test_median_abs_log_error.toFixed(2) })),
+        h('div', { class: 'fact' }, h('span', { text: 'Leave-one-category-out error' }), h('b', { text: 'median |log error| ' + v.loco_median_abs_log_error.toFixed(2) })),
+        h('div', { class: 'fact' }, h('span', { text: 'Leave-one-out error' }), h('b', { text: 'median |log error| ' + v.loo_median_abs_log_error.toFixed(2) })),
         h('div', { class: 'fact' }, h('span', { text: 'Median launch odds' }), h('b', { text: Math.round(DATA.median_launch_odds * 100) + '%' })),
         h('div', { class: 'fact' }, h('span', { text: 'Live-token protocols set aside' }), h('b', { text: String(DATA.live_size) }))
       )
@@ -382,17 +411,99 @@
     );
   }
 
+  function fmtSigned(n, digits) {
+    if (n === null || n === undefined || !isFinite(n)) return 'n/a';
+    return (n > 0 ? '+' : '') + n.toFixed(digits === undefined ? 3 : digits);
+  }
+
+  function calibrationChart() {
+    var pts = fit.calibration || [];
+    var W = 640, H = 400, padL = 46, padB = 38, padT = 14, padR = 14;
+    var xs = pts.map(function (p) { return p.predicted; });
+    var ys = pts.map(function (p) { return p.actual; });
+    var lo = Math.floor(Math.min.apply(null, xs.concat(ys))) - 1;
+    var hi = Math.ceil(Math.max.apply(null, xs.concat(ys))) + 1;
+    function X(v) { return padL + (v - lo) / (hi - lo) * (W - padL - padR); }
+    function Y(v) { return H - padB - (v - lo) / (hi - lo) * (H - padT - padB); }
+    var s = '';
+    s += '<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="Leave-one-out calibration: predicted against actual log market cap for the ' + pts.length + ' fitted protocols">';
+    s += '<line x1="' + X(lo) + '" y1="' + Y(lo) + '" x2="' + X(hi) + '" y2="' + Y(hi) + '" stroke="#f0b23e" stroke-width="1.5" stroke-dasharray="5 4"/>';
+    for (var t = Math.ceil(lo); t <= hi; t += 1) {
+      s += '<line x1="' + X(t) + '" y1="' + (H - padB) + '" x2="' + X(t) + '" y2="' + padT + '" stroke="#26333f" stroke-width="1"/>';
+      s += '<line x1="' + padL + '" y1="' + Y(t) + '" x2="' + (W - padR) + '" y2="' + Y(t) + '" stroke="#26333f" stroke-width="1"/>';
+      s += '<text x="' + X(t) + '" y="' + (H - padB + 16) + '" fill="#8fa1af" font-size="11" text-anchor="middle">' + t + '</text>';
+      s += '<text x="' + (padL - 8) + '" y="' + (Y(t) + 4) + '" fill="#8fa1af" font-size="11" text-anchor="end">' + t + '</text>';
+    }
+    pts.forEach(function (p) {
+      var err = Math.abs(p.predicted - p.actual);
+      var fill = err > 1.5 ? '#e0705f' : '#f0b23e';
+      s += '<circle cx="' + X(p.predicted).toFixed(1) + '" cy="' + Y(p.actual).toFixed(1) + '" r="3.2" fill="' + fill + '"><title>' + p.name + ' (' + (p.category || 'Other') + '): actual ' + p.actual.toFixed(2) + ', predicted ' + p.predicted.toFixed(2) + '</title></circle>';
+    });
+    s += '<text x="' + (W / 2) + '" y="' + (H - 6) + '" fill="#8fa1af" font-size="12" text-anchor="middle">predicted ln(market cap)</text>';
+    s += '<text x="14" y="' + (H / 2) + '" fill="#8fa1af" font-size="12" text-anchor="middle" transform="rotate(-90 14 ' + (H / 2) + ')">actual ln(market cap)</text>';
+    s += '</svg>';
+    var host = h('div', { class: 'calib' });
+    host.innerHTML = s;
+    return host;
+  }
+
   function modelPanel() {
     var v = fit.validation;
+    var termRows = [
+      ['intercept', c.intercept, 'The level: a protocol at TVL $1, flat growth, age zero would price at e^' + c.intercept.toFixed(2) + '. Read with the other terms, not alone.'],
+      ['ln(TVL)', c.log_tvl, 'Doubling TVL lifts the fitted value by about ' + Math.round((Math.pow(2, c.log_tvl) - 1) * 100) + '%. Sub-linear: size matters, but not one for one.'],
+      ['tanh(7d growth / 30)', c.tanh_growth, 'A hot week carries almost no signal on the cleaned pool. Radar-4 read −1.78 here; that sign was the exchange tokens in its pool, not the market.'],
+      ['age in years', c.age_years, 'Each extra year shaves about ' + Math.round((1 - Math.exp(c.age_years)) * 100) + '% off the fitted value once TVL is in: an old protocol that still has no token is discounted.']
+    ];
+    var validRows = [
+      ['Random 80/20 split', v.train_size + ' train / ' + v.test_size + ' test, by slug hash', v.test_median_abs_log_error, v.test_mean_abs_log_error, v.test_r2],
+      ['Leave-one-category-out', v.loco_protocols + ' protocols held out whole, ' + v.loco_categories + ' categories', v.loco_median_abs_log_error, v.loco_mean_abs_log_error, v.loco_r2],
+      ['Leave-one-out', v.pool_size + ' refits, one protocol out at a time', v.loo_median_abs_log_error, null, v.loo_r2]
+    ];
     return h('section', { class: 'panel model' },
-      h('h2', { text: 'How the implied value is fitted' }),
-      h('p', { class: 'sub', text: 'The model is a linear regression fitted at runtime on the ' + v.pool_size + ' live-token protocols that have a market cap, a TVL, a 7-day change and a listing date. The target is log market cap; the fit reports its own held-out numbers, and the board uses the same fit for every row.' }),
+      h('h2', { text: 'How the implied value is fitted — and how it is checked' }),
+      h('p', { class: 'sub', text: 'The model is one linear regression, fitted at runtime on the ' + v.pool_size + ' live-token protocols that have a market cap, a TVL, a 7-day change and a listing date. Centralised exchanges are set aside from the fit (' + v.pool_excluded_cex + ' protocols): an exchange token prices the exchange, not the TVL on its books, and the board never scores an exchange. The target is log market cap. The fit reports its own held-out numbers, and the board uses the same fit for every row.' }),
       h('div', { class: 'formula' },
-        h('div', null, h('b', { text: 'ln(implied value)' }), ' = ' + c.intercept.toFixed(3) + ' + ' + c.log_tvl.toFixed(3) + ' ln(TVL) + ' + c.tanh_growth.toFixed(3) + ' tanh(7d growth / 60) + ' + c.age_years.toFixed(3) + ' age in years'),
-        h('div', null, h('b', { text: 'fit' }), ': ' + v.train_size + ' train / ' + v.test_size + ' test (80/20 by slug hash). Train R² ' + v.train_r2.toFixed(3) + '. Test median |log error| ' + v.test_median_abs_log_error.toFixed(2) + ', test mean ' + v.test_mean_abs_log_error.toFixed(2) + ', leave-one-out median ' + v.loo_median_abs_log_error.toFixed(2) + '.'),
-        h('div', null, h('b', { text: 'sector' }), ': a category multiple was tested the same way and dropped: its test median |log error| ' + v.sector_test_median_abs_log_error.toFixed(2) + ' is worse than ' + v.test_median_abs_log_error.toFixed(2) + ' without it, so the board carries no sector adjustment.')
+        h('div', null, h('b', { text: 'ln(implied value)' }), ' = ' + c.intercept.toFixed(3) + ' + ' + c.log_tvl.toFixed(3) + ' ln(TVL) + ' + c.tanh_growth.toFixed(3) + ' tanh(7d growth / 30) + ' + c.age_years.toFixed(3) + ' age in years')
       ),
-      h('p', { class: 'sub', text: 'Growth enters with a negative sign: among live protocols, a fast 7-day TVL jump relative to market cap reads as a hot week, not a higher steady value. Age is near zero. The model is rough — the median test miss is about a factor of ' + Math.exp(v.test_median_abs_log_error).toFixed(1) + 'x — so treat each implied value as an order of magnitude, not a price.' })
+      h('div', { class: 'diag' },
+        h('div', null,
+          h('h3', { text: 'Every term, fitted' }),
+          h('table', { class: 'diag-table' },
+            h('thead', null, h('tr', null, h('th', { scope: 'col', text: 'Term' }), h('th', { scope: 'col', text: 'Coefficient' }), h('th', { scope: 'col', text: 'What it says' }))),
+            h('tbody', null, termRows.map(function (r) {
+              return h('tr', null, h('td', { class: 'num', text: r[0] }), h('td', { class: 'num', text: fmtSigned(r[1]) }), h('td', { text: r[2] }));
+            }))
+          )
+        ),
+        h('div', null,
+          h('h3', { text: 'Held out twice, plus leave-one-out' }),
+          h('table', { class: 'diag-table' },
+            h('thead', null, h('tr', null, h('th', { scope: 'col', text: 'Check' }), h('th', { scope: 'col', text: 'Median |log error|' }), h('th', { scope: 'col', text: 'Mean |log error|' }), h('th', { scope: 'col', text: 'R²' }))),
+            h('tbody', null, validRows.map(function (r) {
+              return h('tr', null,
+                h('td', null, h('b', { text: r[0] }), h('div', { class: 'sub', text: r[1] })),
+                h('td', { class: 'num', text: r[2].toFixed(2) }),
+                h('td', { class: 'num', text: r[3] === null ? '—' : r[3].toFixed(2) }),
+                h('td', { class: 'num', text: fmtSigned(r[4], 2) })
+              );
+            }))
+          ),
+          h('p', { class: 'note', text: 'Train R² ' + v.train_r2.toFixed(2) + '. The held-out R² values sit near or below zero because one or two protocols carry market caps that ignore TVL entirely (a token locker at 19x its TVL, an allocator at 0.6% of it); squares let those two dominate, so the median is the robust read. Against radar-4 the medians improve on all three checks: 0.95 vs 1.23 random, 0.82 vs 1.20 by category, 0.97 vs 1.05 leave-one-out.' })
+        )
+      ),
+      h('div', null,
+        h('h3', { text: 'Calibration: leave-one-out predictions vs actual market caps' }),
+        calibrationChart(),
+        h('p', { class: 'note', text: 'Each dot is one of the ' + v.pool_size + ' fitted protocols, predicted by a model that never saw it. The dashed line is perfect calibration. Dots off the line are the protocols whose market cap the snapshot cannot explain — supply, vesting and sentiment, which the snapshot never sees. Red dots miss by more than 1.5 in log terms (about 4.5x).' })
+      ),
+      h('div', null,
+        h('h3', { text: 'Terms that were fitted and dropped' }),
+        h('ul', { class: 'rejected' }, v.rejected.map(function (r) {
+          return h('li', null, h('b', { text: r.name + ': ' }), 'random-split median ' + r.test_median_abs_log_error.toFixed(2) + ', leave-one-out median ' + r.loo_median_abs_log_error.toFixed(2) + ' — ' + r.note + '.');
+        }))
+      ),
+      h('p', { class: 'sub', text: 'The model is rough — the median held-out miss is about a factor of ' + Math.exp(v.test_median_abs_log_error).toFixed(1) + 'x — so treat each implied value as an order of magnitude, not a price.' })
     );
   }
 
@@ -408,7 +519,7 @@
     var steps = farmSteps(row);
     var recomputed = impliedOf(row);
     var growth = row.change_7d === null || row.change_7d === undefined ? 0 : Math.min(1000, Math.max(-95, row.change_7d));
-    var tanhGrowth = Math.tanh(growth / 60);
+    var tanhGrowth = Math.tanh(growth / 30);
     var ageYears = ageYearsOf(row);
     var logVal = logValueOf(row);
     dialog.appendChild(h('div', { class: 'detail-head' },
@@ -423,13 +534,15 @@
       h('h3', { text: 'Implied value, fitted' }),
       h('div', { class: 'equation' },
         h('div', null, h('span', { text: 'ln(TVL) = ln(' + fmtUsd(row.tvl_usd) + ') x ' + c.log_tvl.toFixed(3) }), h('b', { class: 'num', text: (c.log_tvl * Math.log(Math.max(1, row.tvl_usd))).toFixed(2) })),
-        h('div', null, h('span', { text: 'tanh(7d ' + fmtPct(row.change_7d) + ' / 60) x ' + c.tanh_growth.toFixed(3) }), h('b', { class: 'num', text: (c.tanh_growth * tanhGrowth).toFixed(2) })),
+        h('div', null, h('span', { text: 'tanh(7d ' + fmtPct(row.change_7d) + ' / 30) x ' + c.tanh_growth.toFixed(3) }), h('b', { class: 'num', text: (c.tanh_growth * tanhGrowth).toFixed(2) })),
         h('div', null, h('span', { text: 'age ' + ageYears.toFixed(1) + ' years x ' + c.age_years.toFixed(3) }), h('b', { class: 'num', text: (c.age_years * ageYears).toFixed(2) })),
         h('div', null, h('span', { text: 'intercept' }), h('b', { class: 'num', text: c.intercept.toFixed(3) })),
         h('div', null, h('span', { text: 'ln(implied value)' }), h('b', { class: 'num', text: logVal.toFixed(2) })),
         h('div', null, h('span', { text: 'implied value' }), h('b', { class: 'num', text: fmtUsd(row.implied_value_usd) })),
         h('div', null, h('span', { text: 'launch odds, from peers' }), h('b', { class: 'num', text: Math.round(row.launch_odds * 100) + '%' })),
-        h('div', null, h('span', { text: 'expected value, net of costs' }), h('b', { class: 'num', text: fmtUsd(row.expected_value_usd) }))
+        h('div', null, h('span', { text: 'gross expected value' }), h('b', { class: 'num', text: fmtUsd(row.gross_expected_value_usd) })),
+        h('div', null, h('span', { text: 'total farm costs' }), h('b', { class: 'num', text: '$' + row.total_cost_usd })),
+        h('div', { class: 'net-ev' }, h('span', { text: 'net expected value, after all costs' }), h('b', { class: 'num', text: fmtUsd(row.expected_value_usd) }))
       ),
       h('p', { class: 'note', text: 'Model ' + fit.version + ': the same fit scores every protocol. The page recomputes this row as ' + fmtUsd(recomputed) + (recomputed === row.implied_value_usd ? ', the same number board.json carries.' : ', which differs from the board: the data would be stale.') + ' Odds come from the launch record of protocols with a similar age and TVL, not from a guess: older, larger peers launch more often.' })
     ));

@@ -135,6 +135,19 @@ tbody tr[data-selected="true"] { background: color-mix(in srgb, var(--accent) 10
 .model { margin-top: var(--s4); padding: var(--s5); display: grid; gap: var(--s3); }
 .formula { font-family: var(--font-num); font-size: 13px; line-height: 1.7; color: var(--muted); overflow-wrap: anywhere; }
 .formula b { color: var(--accent); font-weight: 500; }
+.diag { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: var(--s5); }
+.diag h3 { margin-bottom: var(--s2); }
+.diag-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.diag-table th, .diag-table td { padding: var(--s2) var(--s3); border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+.diag-table th { color: var(--muted); font-size: 12px; font-weight: 500; }
+.diag-table td { color: var(--ink); }
+.diag-table td .sub { display: block; margin-top: 2px; }
+.calib { margin-top: var(--s2); }
+.calib svg { display: block; width: 100%; max-width: 720px; height: auto; }
+.rejected { margin: var(--s2) 0 0; padding-left: var(--s5); display: grid; gap: var(--s2); color: var(--muted); font-size: 13px; }
+.rejected b { color: var(--ink); font-weight: 600; }
+.net-ev { background: color-mix(in srgb, var(--accent) 12%, var(--surface)); border: 1px solid var(--accent); border-radius: var(--radius-control); padding: var(--s2) var(--s3); margin: 0 calc(-1 * var(--s3)); }
+.net-ev b { color: var(--accent); }
 .empty { padding: var(--s7) var(--s5); text-align: center; display: grid; gap: var(--s3); justify-items: center; }
 .empty p { color: var(--muted); }
 .button { min-height: 38px; padding: 0 var(--s4); border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--surface-2); }
@@ -167,6 +180,7 @@ tbody tr[data-selected="true"] { background: color-mix(in srgb, var(--accent) 10
 @media (max-width: 900px) {
   .shell { padding: var(--s4); }
   .lede { grid-template-columns: 1fr; gap: var(--s4); }
+  .diag { grid-template-columns: 1fr; }
   .kpi { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .facts { border-left: 0; border-top: 1px solid var(--border); padding-left: 0; padding-top: var(--s4); }
   .field input { min-width: 0; width: 100%; }
