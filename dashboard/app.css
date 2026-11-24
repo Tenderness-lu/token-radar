@@ -1,4 +1,4 @@
-/* Token Radar, radar-3 theme. One dark palette, one accent, two radii, two families;
+/* Token Radar, radar-4 theme. One dark palette, one accent, two radii, two families;
    everything else is spacing, a hairline and a type step. */
 :root {
   --canvas: #0b1015;
@@ -70,6 +70,25 @@ a { color: var(--accent); }
 .fact { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s3); }
 .fact b { font-family: var(--font-num); font-size: 15px; font-weight: 500; }
 .fact span { color: var(--muted); font-size: 13px; }
+
+.kpi {
+  display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 1px;
+  background: var(--border); border: 1px solid var(--border); border-radius: var(--radius-panel);
+  overflow: hidden; margin-bottom: var(--s4);
+}
+.kpi-item { background: var(--surface); padding: var(--s4); display: grid; gap: 2px; }
+.kpi-item b { font-family: var(--font-num); font-size: 20px; font-weight: 600; }
+.kpi-item span { color: var(--muted); font-size: 12px; line-height: 1.4; }
+.integrity {
+  display: flex; flex-wrap: wrap; gap: var(--s2) var(--s4);
+  padding: var(--s3) var(--s4); margin-bottom: var(--s2);
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-panel);
+  font-size: 13px;
+}
+.check { color: var(--muted); white-space: nowrap; }
+.check.ok { color: var(--up); }
+.check.bad { color: var(--down); }
+.audit { color: var(--muted); font-size: 13px; margin: 0 0 var(--s4); }
 
 .controls { display: flex; flex-wrap: wrap; align-items: end; gap: var(--s3); padding: var(--s4) 0; border-top: 1px solid var(--border); }
 .field { display: grid; gap: var(--s1); }
@@ -148,6 +167,7 @@ tbody tr[data-selected="true"] { background: color-mix(in srgb, var(--accent) 10
 @media (max-width: 900px) {
   .shell { padding: var(--s4); }
   .lede { grid-template-columns: 1fr; gap: var(--s4); }
+  .kpi { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .facts { border-left: 0; border-top: 1px solid var(--border); padding-left: 0; padding-top: var(--s4); }
   .field input { min-width: 0; width: 100%; }
 }
