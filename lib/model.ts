@@ -1,4 +1,4 @@
-// Token Radar's model, radar-6: one sealed snapshot in, one ranked board out.
+// Token Radar's model, radar-7: one sealed snapshot in, one ranked board out.
 //
 // The board ranks every rankable pre-token protocol on the snapshot (the watchlist is the floor,
 // never the ceiling) plus every watchlist slug, strongest implied value first. A protocol is
@@ -23,30 +23,24 @@
 //   (C) leave-one-out over the pool, whose 87 (actual, predicted) pairs also feed the
 //       dashboard's calibration chart.
 //
-// What changed from radar-5, and why. Radar-5's value model is KEPT: radar-6 tried to beat
-// it honestly and could not. Fourteen alternatives were fitted the same way — a quadratic
-// log-TVL term, a log-TVL-by-age interaction, both together, a gentler growth transform
-// (tanh/60, raw growth), log age, ridge shrinkage, a MAD-trimmed fit, a sigma-trimmed fit,
-// a winsorised target, weighted least squares and least-absolute-deviations — and none
-// beats the plain four-term regression on BOTH the random test and leave-one-out. The
-// closest call is the interaction plus quadratic: it wins all three fixed medians by a
-// hair (test 0.94 vs 0.95, leave-one-category-out 0.76 vs 0.82, leave-one-out 0.96 vs
-// 0.97), but it loses two of the five alternate hash splits, moves 88 of the 203 board
-// rows by more than ten ranks, and destabilises the growth coefficient eighteen-fold
-// (0.008 to 0.142), so the board keeps the simpler model and the panel reports the
-// interaction's numbers as a rejected term. Trimming is the clearest dead end: dropping
-// the five worst residuals (Rain at 400x its TVL, Bitway Earn at 36x, Concentrator at
-// 0.1% of its TVL, Gravity Bridge at 0.8%, Obol at 0.06%) makes every held-out check
-// worse, so the outliers stay in the pool and are named instead of hidden.
+// What changed from radar-6, and why. Radar-6 tried fourteen alternatives on ONE hash
+// split and kept none, but two were close calls that deserved a fairer test, so radar-7
+// re-runs the search on FIVE hash splits (each hash quintile held out in turn) and keeps
+// a candidate only when it wins the median |log error| on at least four of the five
+// splits AND moves fewer than twenty of the 203 board rows by more than ten ranks.
+// Candidates: ridge shrinkage at lambda 1, 3, 10 and 30; the interaction-plus-quadratic
+// terms with ridge shrinkage; per-category TVL slopes; and a ratio regression on
+// log(mcap/TVL). The search table is in the panel, kept or rejected, so a reader can
+// see the model survived a stability test rather than a single split.
 //
-// What radar-6 DOES change is launch odds. Radar-5's odds came from an age-bucket by
-// TVL-tier table with shrinkage. Radar-6 fits a per-protocol logistic regression on
-// launch (issued a token or not) over all 758 protocols, with age, log TVL, 7-day growth
-// and category as features, and validates it against the old table on a held-out split:
-// the logistic wins on Brier score on every one of the five hash quintiles (mean 0.202
-// against the table's 0.223; on the fixed 80/20 split 0.186 against 0.213), so the board
-// carries the logistic odds. The dashboard's diagnostics panel states both Brier scores
-// and the logistic's coefficients, so a reader can see the odds are fitted, not asserted.
+// What radar-7 DOES change is the dossier's evidence and the launch odds. The dossier
+// text now opens with a worked valuation: one watchlist protocol priced term by term
+// from its TVL to its implied value, then a top-ten table by expected value (implied
+// value times launch odds). The board already carried each row's farm net expected
+// value; the dashboard now labels that column "Farm net EV" and sorts on it. Launch
+// odds try two more features — how many chains a protocol runs on, and a category-by-
+// age interaction — and keep them only when the five-fold Brier score improves on the
+// radar-6 logistic's 0.202.
 //
 // The fit reports its own held-out numbers, and the board uses the same fit for every
 // row. Held-out R-squared is below zero on both schemes, dragged there by one or two
@@ -108,6 +102,17 @@ export interface CalibrationPoint {
   predicted: number;
 }
 
+/** One candidate in the five-split stability search, as the panel states it. */
+export interface FiveSplitCandidate {
+  name: string;
+  split_medians: number[];
+  base_medians: number[];
+  wins: number;
+  mean_median: number;
+  rank_moves_over_10: number;
+  kept: boolean;
+}
+
 /** The fit's held-out validation, as the dashboard's diagnostics panel states it. */
 export interface FitValidation {
   pool_size: number;
@@ -127,6 +132,10 @@ export interface FitValidation {
   loo_r2: number;
   median_age_days: number;
   rejected: RejectedAlternative[];
+  /** The five-split stability search: every candidate, whether it was kept or not. */
+  five_split: FiveSplitCandidate[];
+  /** Which model's coefficients the board carries: 'base' or a candidate's name. */
+  kept_model: string;
 }
 
 /** The fitted model and its validation, as shipped to the dashboard. */
@@ -136,11 +145,20 @@ export interface FittedModel {
   coefficients: FitCoefficients;
   validation: FitValidation;
   calibration: CalibrationPoint[];
+  /** The kept model's feature shape: 'base', 'ridge-<lambda>', 'jq-ridge-<lambda>',
+   *  'category-slopes' or 'ratio'. The dashboard recomputes rows from this plus `beta`. */
+  features: string;
+  /** The kept model's full coefficient vector, in its feature order. */
+  beta: number[];
+  /** The kept model's feature parameters: the centring mean and the slope categories. */
+  feature_params: { mean_log_tvl: number; categories: string[]; reference_category: string };
 }
 
 /** The launch-odds model's held-out validation: Brier score and log loss on the fixed
  * 80/20 split and the five-fold mean, for the logistic model, the old age-by-TVL table,
- * and the global launch rate alone. Lower Brier is better. */
+ * and the global launch rate alone. Lower Brier is better. The extended logistic adds
+ * chain count and a category-by-age interaction; it is kept only when its five-fold
+ * Brier beats the plain logistic's. */
 export interface OddsValidation {
   test_size: number;
   table_brier: number;
@@ -150,19 +168,25 @@ export interface OddsValidation {
   global_brier: number;
   five_fold_table_brier: number;
   five_fold_logistic_brier: number;
+  extended_logistic_brier: number;
+  extended_logistic_logloss: number;
+  five_fold_extended_logistic_brier: number;
 }
 
 /** The logistic launch-odds model: one regression per protocol, fitted at runtime on all
  * 758 snapshot protocols. Coefficients run [intercept, age in years, ln(TVL),
  * tanh(7d growth / 30), then one per dummy category]; the reference category (the most
- * common one) carries no dummy. A protocol with no listing date takes the pool's median
- * age, the same imputation the fit uses. */
+ * common one) carries no dummy. The extended shape appends log1p(chain count), then one
+ * age-by-category interaction per dummy category. A protocol with no listing date takes
+ * the pool's median age, the same imputation the fit uses. */
 export interface LogisticOdds {
   reference_category: string;
   categories: string[];
   coefficients: number[];
   median_age_days: number;
   validation: OddsValidation;
+  /** 'base' or 'extended': which feature shape the production coefficients use. */
+  features: string;
 }
 
 /** The audit: every one of the snapshot's protocols, accounted for. */
@@ -188,7 +212,7 @@ export interface Integrity {
 }
 
 /** The model's version label: the dashboard names it. */
-export const MODEL_VERSION = 'radar-6';
+export const MODEL_VERSION = 'radar-7';
 
 /** How many live-token protocols the Live token view carries: every one with a market cap. */
 export const LIVE_ROWS = 1000;
@@ -560,12 +584,36 @@ export function fitModel(snapshot: Snapshot): FittedModel {
   const looMedian = median(looErrors, 0);
   const looR2 = rSquaredOf(looPredicted, pool.map((p) => Math.log(p.mcap_usd!)));
 
-  // Fourteen alternatives, fitted the same way and reported whether or not they win.
-  // A term is kept only when it beats the base model on BOTH the random test and
-  // leave-one-out; none of these does, so the board carries the plain four-term model.
-  // The feature variants change what the regression sees; the fit variants change how it
-  // is fitted. Each one is scored on the random test, leave-one-category-out and
-  // leave-one-out, all at runtime.
+  // The five-split stability search (radar-7): every candidate is scored on FIVE hash
+  // splits — each hash quintile held out in turn — and kept only when it wins the
+  // median |log error| on at least four of the five AND moves fewer than twenty of the
+  // board's rows by more than ten ranks. A single split can flatter a fragile term;
+  // five splits and a rank-movement cap cannot. The candidates:
+  // ridge shrinkage at lambda 1, 3, 10 and 30 on the base four terms; the
+  // interaction-plus-quadratic terms with ridge shrinkage; per-category TVL slopes;
+  // and a ratio regression on log(mcap/TVL).
+  interface ModelSpec {
+    name: string;
+    features: (p: SnapshotProtocol) => number[];
+    fitWith: (rows: SnapshotProtocol[]) => number[];
+    targetOf: (p: SnapshotProtocol) => number;
+    predictOf: (beta: number[], p: SnapshotProtocol) => number;
+  }
+  const logMcap = (p: SnapshotProtocol): number => Math.log(p.mcap_usd!);
+  const dotPredict = (features: (p: SnapshotProtocol) => number[]) => (beta: number[], p: SnapshotProtocol): number => dot(beta, features(p));
+  const plainFit = (features: (p: SnapshotProtocol) => number[], ridge = 0) => (rows: SnapshotProtocol[]): number[] =>
+    ols(
+      rows.map(features),
+      rows.map(logMcap),
+      ridge,
+    );
+  const baseSpec: ModelSpec = {
+    name: 'base',
+    features: baseFeatures,
+    fitWith: plainFit(baseFeatures),
+    targetOf: logMcap,
+    predictOf: dotPredict(baseFeatures),
+  };
   const meanLnTvl = pool.reduce((s, p) => s + Math.log(Math.max(1, p.tvl_usd)), 0) / Math.max(1, pool.length);
   const quadFeatures = (p: SnapshotProtocol): number[] => {
     const d = Math.log(Math.max(1, p.tvl_usd)) - meanLnTvl;
@@ -580,6 +628,167 @@ export function fitModel(snapshot: Snapshot): FittedModel {
     const a = ageDaysForFit(p, medianAgeDays, snapshot.as_of) / 365;
     return [...baseFeatures(p), d * a, d * d];
   };
+  // Per-category TVL slopes: the reference category keeps the plain slope, every other
+  // category with 5+ protocols in the pool gets its own slope shift.
+  const poolCategoryCounts = new Map<string, number>();
+  for (const p of pool) poolCategoryCounts.set(p.category ?? 'Other', (poolCategoryCounts.get(p.category ?? 'Other') ?? 0) + 1);
+  const slopeCategories = [...poolCategoryCounts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .filter(([, n]) => n >= 5)
+    .map(([c]) => c);
+  const slopeReference = slopeCategories[0] ?? 'Other';
+  const slopeFeatures = (p: SnapshotProtocol): number[] => {
+    const base = baseFeatures(p);
+    const dummies = slopeCategories.slice(1).map((c) => ((p.category ?? 'Other') === c ? Math.log(Math.max(1, p.tvl_usd)) : 0));
+    return [...base, ...dummies];
+  };
+  const ratioFeatures = (p: SnapshotProtocol): number[] => {
+    const base = baseFeatures(p);
+    return [base[0]!, base[2]!, base[3]!];
+  };
+  const ratioTarget = (p: SnapshotProtocol): number => Math.log(p.mcap_usd! / Math.max(1, p.tvl_usd));
+  const ratioPredict = (beta: number[], p: SnapshotProtocol): number => Math.log(Math.max(1, p.tvl_usd)) + dot(beta, ratioFeatures(p));
+  const candidateSpecs: ModelSpec[] = [
+    { name: 'ridge lambda 1', features: baseFeatures, fitWith: plainFit(baseFeatures, 1), targetOf: logMcap, predictOf: dotPredict(baseFeatures) },
+    { name: 'ridge lambda 3', features: baseFeatures, fitWith: plainFit(baseFeatures, 3), targetOf: logMcap, predictOf: dotPredict(baseFeatures) },
+    { name: 'ridge lambda 10', features: baseFeatures, fitWith: plainFit(baseFeatures, 10), targetOf: logMcap, predictOf: dotPredict(baseFeatures) },
+    { name: 'ridge lambda 30', features: baseFeatures, fitWith: plainFit(baseFeatures, 30), targetOf: logMcap, predictOf: dotPredict(baseFeatures) },
+    { name: 'interaction plus quadratic, ridge 3', features: jqFeatures, fitWith: plainFit(jqFeatures, 3), targetOf: logMcap, predictOf: dotPredict(jqFeatures) },
+    { name: 'per-category TVL slopes', features: slopeFeatures, fitWith: plainFit(slopeFeatures), targetOf: logMcap, predictOf: dotPredict(slopeFeatures) },
+    { name: 'ratio regression on log(mcap/TVL)', features: ratioFeatures, fitWith: (rows) => ols(rows.map(ratioFeatures), rows.map(ratioTarget)), targetOf: ratioTarget, predictOf: ratioPredict },
+  ];
+  /** One candidate's median |log error| on each of the five hash splits. */
+  const splitMedians = (spec: ModelSpec): number[] => {
+    const medians: number[] = [];
+    for (let q = 0; q < 5; q++) {
+      const held = pool.filter((p) => hashQuintile(p.slug) === q);
+      const rest = pool.filter((p) => hashQuintile(p.slug) !== q);
+      const beta = spec.fitWith(rest);
+      medians.push(median(held.map((p) => Math.abs(spec.predictOf(beta, p) - Math.log(p.mcap_usd!))), 0));
+    }
+    return medians;
+  };
+  /** How many of the board's rows a candidate moves by more than ten ranks, against the base model. */
+  const rankMoves = (spec: ModelSpec): number => {
+    const rankSet = new Map<string, SnapshotProtocol>();
+    for (const slug of snapshot.watchlist) {
+      const p = snapshot.protocols.find((q) => q.slug === slug);
+      if (p !== undefined) rankSet.set(slug, p);
+    }
+    for (const p of snapshot.protocols) if (!rankSet.has(p.slug) && isRankable(p)) rankSet.set(p.slug, p);
+    const betaBase = baseSpec.fitWith(pool);
+    const betaCand = spec.fitWith(pool);
+    const orderOf = (beta: number[], predict: (b: number[], p: SnapshotProtocol) => number): Map<string, number> => {
+      const slugs = [...rankSet.keys()].sort((a, b) => {
+        const va = Math.max(1, Math.round(Math.exp(predict(beta, rankSet.get(a)!))));
+        const vb = Math.max(1, Math.round(Math.exp(predict(beta, rankSet.get(b)!))));
+        return vb - va || (a < b ? -1 : a > b ? 1 : 0);
+      });
+      return new Map(slugs.map((s, i) => [s, i + 1]));
+    };
+    const rBase = orderOf(betaBase, baseSpec.predictOf);
+    const rCand = orderOf(betaCand, spec.predictOf);
+    let moves = 0;
+    for (const slug of rankSet.keys()) if (Math.abs(rCand.get(slug)! - rBase.get(slug)!) > 10) moves++;
+    return moves;
+  };
+  const baseMedians = splitMedians(baseSpec);
+  const fiveSplit: FiveSplitCandidate[] = [];
+  for (const spec of candidateSpecs) {
+    const medians = splitMedians(spec);
+    const wins = medians.filter((m, q) => m < baseMedians[q]!).length;
+    const mean = medians.reduce((a, b) => a + b, 0) / 5;
+    fiveSplit.push({
+      name: spec.name,
+      split_medians: medians.map((v) => Math.round(v * 1e4) / 1e4),
+      base_medians: baseMedians.map((v) => Math.round(v * 1e4) / 1e4),
+      wins,
+      mean_median: Math.round(mean * 1e4) / 1e4,
+      rank_moves_over_10: rankMoves(spec),
+      kept: false,
+    });
+  }
+  // Keep the best candidate that clears both bars; otherwise the base model stays.
+  let keptSpec = baseSpec;
+  let bestMean = Infinity;
+  for (let i = 0; i < fiveSplit.length; i++) {
+    const row = fiveSplit[i]!;
+    if (row.wins >= 4 && row.rank_moves_over_10 < 20 && row.mean_median < bestMean) {
+      bestMean = row.mean_median;
+      keptSpec = candidateSpecs[i]!;
+    }
+  }
+  for (const row of fiveSplit) row.kept = keptSpec.name === row.name;
+  const keptModelName = keptSpec === baseSpec ? 'base' : keptSpec.name;
+
+  /**
+   * The full validation of one feature shape, for the kept model: the fixed 80/20 split,
+   * leave-one-category-out and leave-one-out, with the calibration pairs. Only run when
+   * the kept model is not the base one; the base numbers above are reused otherwise.
+   */
+  const validateSpec = (spec: ModelSpec): { train_r2: number; test_median: number; test_mean: number; test_r2: number; loco_median: number; loco_mean: number; loco_r2: number; loo_median: number; loo_r2: number; calibration: CalibrationPoint[] } => {
+    const betaTrain = spec.fitWith(train);
+    const testErrs = test.map((p) => Math.abs(spec.predictOf(betaTrain, p) - Math.log(p.mcap_usd!)));
+    const locoErrs: number[] = [];
+    const locoPred: number[] = [];
+    const locoAct: number[] = [];
+    for (const category of categories) {
+      const held = pool.filter((p) => (p.category ?? 'Other') === category);
+      if (held.length < 3) continue;
+      const rest = pool.filter((p) => (p.category ?? 'Other') !== category);
+      const b = spec.fitWith(rest);
+      for (const p of held) {
+        locoErrs.push(Math.abs(spec.predictOf(b, p) - Math.log(p.mcap_usd!)));
+        locoPred.push(spec.predictOf(b, p));
+        locoAct.push(Math.log(p.mcap_usd!));
+      }
+    }
+    const looErrs: number[] = [];
+    const looPred: number[] = [];
+    const calib: CalibrationPoint[] = [];
+    for (let i = 0; i < pool.length; i++) {
+      const rest = pool.filter((_, j) => j !== i);
+      const b = spec.fitWith(rest);
+      const pred = spec.predictOf(b, pool[i]!);
+      looErrs.push(Math.abs(pred - Math.log(pool[i]!.mcap_usd!)));
+      looPred.push(pred);
+      calib.push({
+        slug: pool[i]!.slug,
+        name: pool[i]!.name,
+        category: pool[i]!.category,
+        actual: Math.round(Math.log(pool[i]!.mcap_usd!) * 1e4) / 1e4,
+        predicted: Math.round(pred * 1e4) / 1e4,
+      });
+    }
+    return {
+      train_r2: rSquaredOf(train.map((p) => spec.predictOf(betaTrain, p)), train.map((p) => Math.log(p.mcap_usd!))),
+      test_median: median(testErrs, 0),
+      test_mean: testErrs.reduce((a, b) => a + b, 0) / Math.max(1, testErrs.length),
+      test_r2: rSquaredOf(test.map((p) => spec.predictOf(betaTrain, p)), test.map((p) => Math.log(p.mcap_usd!))),
+      loco_median: median(locoErrs, 0),
+      loco_mean: locoErrs.reduce((a, b) => a + b, 0) / Math.max(1, locoErrs.length),
+      loco_r2: rSquaredOf(locoPred, locoAct),
+      loo_median: median(looErrs, 0),
+      loo_r2: rSquaredOf(looPred, pool.map((p) => Math.log(p.mcap_usd!))),
+      calibration: calib,
+    };
+  };
+  const keptValidation =
+    keptSpec === baseSpec
+      ? null
+      : validateSpec(keptSpec);
+  const productionBeta = keptSpec.fitWith(pool);
+  const keptCalibration = keptValidation === null ? calibration : keptValidation.calibration;
+
+  // The radar-6 alternatives, fitted the same way and reported whether or not they win.
+  // A term is kept only when it beats the base model on BOTH the random test and
+  // leave-one-out; none of these does, so the radar-6 list stands as a record of what
+  // was tried. Radar-7's own search is the five-split table above, which re-tests the
+  // close calls (ridge, interaction plus quadratic) on five splits with a rank-movement
+  // cap before any of them may replace the base model.
+  // The feature variants change what the regression sees; the fit variants change how it
+  // is fitted. Each one is scored on the random test, leave-one-category-out and
+  // leave-one-out, all at runtime.
   const tanh60Features = (p: SnapshotProtocol): number[] => {
     const g = finite(p.change_7d, 0);
     return [1, Math.log(Math.max(1, p.tvl_usd)), Math.tanh(Math.min(1000, Math.max(-95, g)) / 60), ageDaysForFit(p, medianAgeDays, snapshot.as_of) / 365];
@@ -711,7 +920,7 @@ export function fitModel(snapshot: Snapshot): FittedModel {
   testAlternative(
     'interaction plus quadratic',
     jqFeatures,
-    'the closest call: it wins all three fixed medians by a hair, but it loses two of the five alternate hash splits, moves 88 of the 203 board rows by more than ten ranks, and pushes the growth coefficient from 0.008 to 0.142 — the gain is not robust enough to bet the board on',
+    'the closest call of radar-6: it wins all three fixed medians by a hair, but it loses two of the five alternate hash splits, moves 88 of the 203 board rows by more than ten ranks, and pushes the growth coefficient from 0.008 to 0.142 — radar-7 re-tests it with ridge shrinkage in the five-split table above before it may replace the base model',
   );
   testAlternative(
     'tanh(7d growth / 60)',
@@ -728,7 +937,14 @@ export function fitModel(snapshot: Snapshot): FittedModel {
     logAgeFeatures,
     'log age loses on every check; age stays linear in years',
   );
-  testAlternative('ridge shrinkage (lambda 3)', baseFeatures, 'shrinking the coefficients helps leave-one-out a touch and hurts the random test; the plain fit stays', fitRidge);
+  testAlternative(
+    'ridge shrinkage (lambda 3)',
+    baseFeatures,
+    keptModelName === 'ridge lambda 3'
+      ? 'shrinking the coefficients helps leave-one-out a touch; on the five-split search it clears both bars, so radar-7 keeps the ridge-3 fit'
+      : 'shrinking the coefficients helps leave-one-out a touch and hurts the random test; the five-split search re-tests it at lambda 1, 3, 10 and 30 before any of them may replace the plain fit',
+    fitRidge,
+  );
   // The five protocols the MAD trim drops, named so the panel can say what it tried.
   const trimBetaFull = fitOn(pool, baseFeatures);
   const trimResidFull = pool.map((p) => Math.log(p.mcap_usd!) - dot(trimBetaFull, baseFeatures(p)));
@@ -765,37 +981,122 @@ export function fitModel(snapshot: Snapshot): FittedModel {
     fitLad,
   );
 
-  const production = fitOn(pool, baseFeatures);
+  // The production coefficients: the kept model's refit on the whole pool. The
+  // four-field coefficients stay the model's base terms (for the ratio model the log-TVL
+  // coefficient is 1 by construction); the full beta and the feature shape travel beside
+  // them so the dashboard recomputes rows exactly.
+  const featureName =
+    keptSpec === baseSpec
+      ? 'base'
+      : keptSpec.name === 'ridge lambda 1'
+        ? 'ridge-1'
+        : keptSpec.name === 'ridge lambda 3'
+          ? 'ridge-3'
+          : keptSpec.name === 'ridge lambda 10'
+            ? 'ridge-10'
+            : keptSpec.name === 'ridge lambda 30'
+              ? 'ridge-30'
+              : keptSpec.name === 'interaction plus quadratic, ridge 3'
+                ? 'jq-ridge-3'
+                : keptSpec.name === 'per-category TVL slopes'
+                  ? 'category-slopes'
+                  : 'ratio';
+  const coefficients: FitCoefficients =
+    featureName === 'ratio'
+      ? {
+          intercept: productionBeta[0]!,
+          log_tvl: 1,
+          tanh_growth: productionBeta[1]!,
+          age_years: productionBeta[2]!,
+        }
+      : {
+          intercept: productionBeta[0]!,
+          log_tvl: productionBeta[1]!,
+          tanh_growth: productionBeta[2]!,
+          age_years: productionBeta[3]!,
+        };
+  const val =
+    keptValidation === null
+      ? {
+          train_r2: trainR2,
+          test_median_abs_log_error: baseTestMedian,
+          test_mean_abs_log_error: baseTestMean,
+          test_r2: baseTestR2,
+          loco_median_abs_log_error: locoMedian,
+          loco_mean_abs_log_error: locoMean,
+          loco_r2: locoR2,
+          loo_median_abs_log_error: looMedian,
+          loo_r2: looR2,
+        }
+      : {
+          train_r2: keptValidation.train_r2,
+          test_median_abs_log_error: keptValidation.test_median,
+          test_mean_abs_log_error: keptValidation.test_mean,
+          test_r2: keptValidation.test_r2,
+          loco_median_abs_log_error: keptValidation.loco_median,
+          loco_mean_abs_log_error: keptValidation.loco_mean,
+          loco_r2: keptValidation.loco_r2,
+          loo_median_abs_log_error: keptValidation.loo_median,
+          loo_r2: keptValidation.loo_r2,
+        };
   return {
     version: MODEL_VERSION,
     as_of: snapshot.as_of,
-    coefficients: {
-      intercept: production[0]!,
-      log_tvl: production[1]!,
-      tanh_growth: production[2]!,
-      age_years: production[3]!,
-    },
+    coefficients,
     validation: {
       pool_size: pool.length,
       pool_excluded_cex: excludedCex,
       train_size: train.length,
       test_size: test.length,
-      train_r2: trainR2,
-      test_median_abs_log_error: baseTestMedian,
-      test_mean_abs_log_error: baseTestMean,
-      test_r2: baseTestR2,
-      loco_median_abs_log_error: locoMedian,
-      loco_mean_abs_log_error: locoMean,
-      loco_r2: locoR2,
+      train_r2: val.train_r2,
+      test_median_abs_log_error: val.test_median_abs_log_error,
+      test_mean_abs_log_error: val.test_mean_abs_log_error,
+      test_r2: val.test_r2,
+      loco_median_abs_log_error: val.loco_median_abs_log_error,
+      loco_mean_abs_log_error: val.loco_mean_abs_log_error,
+      loco_r2: val.loco_r2,
       loco_protocols: locoProtocols,
       loco_categories: locoCategories,
-      loo_median_abs_log_error: looMedian,
-      loo_r2: looR2,
+      loo_median_abs_log_error: val.loo_median_abs_log_error,
+      loo_r2: val.loo_r2,
       median_age_days: medianAgeDays,
       rejected,
+      five_split: fiveSplit,
+      kept_model: keptModelName,
     },
-    calibration,
+    calibration: keptCalibration,
+    features: featureName,
+    beta: productionBeta,
+    feature_params: { mean_log_tvl: meanLnTvl, categories: slopeCategories.slice(1), reference_category: slopeReference },
   };
+}
+
+/** Predicted log market cap for one protocol under the kept model's feature shape.
+ * The dashboard's page recomputes rows from the same rule, with the same beta and
+ * parameters, so the two can never drift apart. */
+export function predictLogValue(protocol: SnapshotProtocol, fit: FittedModel): number {
+  const beta = fit.beta;
+  const params = fit.feature_params;
+  const logTvl = Math.log(Math.max(1, protocol.tvl_usd));
+  const growth = Math.min(1000, Math.max(-95, finite(protocol.change_7d, 0)));
+  const tanhGrowth = Math.tanh(growth / GROWTH_SCALE);
+  const ageYears = ageDaysForFit(protocol, fit.validation.median_age_days, fit.as_of) / 365;
+  switch (fit.features) {
+    case 'ratio':
+      return logTvl + beta[0]! + beta[1]! * tanhGrowth + beta[2]! * ageYears;
+    case 'jq-ridge-3': {
+      const d = logTvl - params.mean_log_tvl;
+      return beta[0]! + beta[1]! * logTvl + beta[2]! * tanhGrowth + beta[3]! * ageYears + beta[4]! * d * ageYears + beta[5]! * d * d;
+    }
+    case 'category-slopes': {
+      const cat = protocol.category ?? 'Other';
+      const idx = params.categories.indexOf(cat);
+      const slope = beta[1]! + (idx >= 0 ? beta[4 + idx]! : 0);
+      return beta[0]! + slope * logTvl + beta[2]! * tanhGrowth + beta[3]! * ageYears;
+    }
+    default:
+      return beta[0]! + beta[1]! * logTvl + beta[2]! * tanhGrowth + beta[3]! * ageYears;
+  }
 }
 
 /** The fitted log value and implied value one protocol gets. */
@@ -803,12 +1104,11 @@ export function fittedValue(
   protocol: SnapshotProtocol,
   fit: FittedModel,
 ): { logValue: number; implied: number; logTvl: number; tanhGrowth: number; ageYears: number } {
-  const c = fit.coefficients;
   const logTvl = Math.log(Math.max(1, protocol.tvl_usd));
   const growth = Math.min(1000, Math.max(-95, finite(protocol.change_7d, 0)));
   const tanhGrowth = Math.tanh(growth / GROWTH_SCALE);
   const ageYears = ageDaysForFit(protocol, fit.validation.median_age_days, fit.as_of) / 365;
-  const logValue = c.intercept + c.log_tvl * logTvl + c.tanh_growth * tanhGrowth + c.age_years * ageYears;
+  const logValue = predictLogValue(protocol, fit);
   const implied = Math.max(1, Math.round(Math.exp(logValue)));
   return { logValue, implied, logTvl, tanhGrowth, ageYears };
 }
@@ -867,12 +1167,31 @@ function oddsFeatures(p: SnapshotProtocol, snapshot: Snapshot, medianAgeDays: nu
 }
 
 /**
+ * The extended launch-odds features (radar-7): the base terms, plus how many chains
+ * a protocol runs on, plus one age-by-category interaction per dummy category, so a
+ * category's launch rate may rise with age at its own pace. Kept only when the
+ * five-fold Brier score improves on the plain logistic's.
+ */
+function oddsFeaturesExtended(p: SnapshotProtocol, snapshot: Snapshot, medianAgeDays: number, categories: string[]): number[] {
+  const base = oddsFeatures(p, snapshot, medianAgeDays, categories);
+  const ageYears = ageDaysForFit(p, medianAgeDays, snapshot.as_of) / 365;
+  const interactions = categories.slice(1).map((c) => ((p.category ?? 'Other') === c ? ageYears : 0));
+  return [...base, Math.log1p(p.chains.length), ...interactions];
+}
+
+/**
  * A logistic regression by iteratively reweighted least squares: 60 rounds, a ridge
  * penalty of 1 on every coefficient but the intercept, weights clamped so a near-certain
  * protocol cannot blow up the working response.
  */
-function fitLogistic(rows: SnapshotProtocol[], snapshot: Snapshot, medianAgeDays: number, categories: string[]): number[] {
-  const X = rows.map((p) => oddsFeatures(p, snapshot, medianAgeDays, categories));
+function fitLogistic(
+  rows: SnapshotProtocol[],
+  snapshot: Snapshot,
+  medianAgeDays: number,
+  categories: string[],
+  features: (p: SnapshotProtocol, snapshot: Snapshot, medianAgeDays: number, categories: string[]) => number[] = oddsFeatures,
+): number[] {
+  const X = rows.map((p) => features(p, snapshot, medianAgeDays, categories));
   const y = rows.map((p) => (isPreToken(p) ? 0 : 1));
   let beta = new Array(X[0]!.length).fill(0);
   for (let iter = 0; iter < 60; iter++) {
@@ -929,7 +1248,9 @@ function tableOddsOn(p: SnapshotProtocol, population: SnapshotProtocol[], snapsh
  * The logistic model against the old table, held out. The fixed split trains on the
  * 80% and scores the 20% test set (the same sha256 split the value model uses); the
  * five-fold pass holds out each hash quintile in turn. Both are reported so the panel
- * can say which odds the board carries and why.
+ * can say which odds the board carries and why. The extended logistic (chain count
+ * plus category-by-age interactions) is scored the same way and kept only when its
+ * five-fold Brier beats the plain logistic's.
  */
 function validateOdds(snapshot: Snapshot, medianAgeDays: number, categories: string[]): OddsValidation {
   const protocols = snapshot.protocols;
@@ -937,6 +1258,7 @@ function validateOdds(snapshot: Snapshot, medianAgeDays: number, categories: str
   const test = protocols.filter((p) => isTestSet(p.slug));
   const train = protocols.filter((p) => !isTestSet(p.slug));
   const logisticTrain = fitLogistic(train, snapshot, medianAgeDays, categories);
+  const extendedTrain = fitLogistic(train, snapshot, medianAgeDays, categories, oddsFeaturesExtended);
   const testActual = test.map((p) => (isPreToken(p) ? 0 : 1));
   const table = brierAndLogloss(
     test.map((p) => tableOddsOn(p, train, snapshot)),
@@ -946,16 +1268,22 @@ function validateOdds(snapshot: Snapshot, medianAgeDays: number, categories: str
     test.map((p) => logistic(dot(logisticTrain, oddsFeatures(p, snapshot, medianAgeDays, categories)))),
     testActual,
   );
+  const ext = brierAndLogloss(
+    test.map((p) => logistic(dot(extendedTrain, oddsFeaturesExtended(p, snapshot, medianAgeDays, categories)))),
+    testActual,
+  );
   const global = brierAndLogloss(
     test.map(() => globalRate),
     testActual,
   );
   let fiveTable = 0;
   let fiveLog = 0;
+  let fiveExt = 0;
   for (let q = 0; q < 5; q++) {
     const held = protocols.filter((p) => hashQuintile(p.slug) === q);
     const rest = protocols.filter((p) => hashQuintile(p.slug) !== q);
     const beta = fitLogistic(rest, snapshot, medianAgeDays, categories);
+    const betaExt = fitLogistic(rest, snapshot, medianAgeDays, categories, oddsFeaturesExtended);
     const actual = held.map((p) => (isPreToken(p) ? 0 : 1));
     fiveTable += brierAndLogloss(
       held.map((p) => tableOddsOn(p, rest, snapshot)),
@@ -963,6 +1291,10 @@ function validateOdds(snapshot: Snapshot, medianAgeDays: number, categories: str
     ).brier;
     fiveLog += brierAndLogloss(
       held.map((p) => logistic(dot(beta, oddsFeatures(p, snapshot, medianAgeDays, categories)))),
+      actual,
+    ).brier;
+    fiveExt += brierAndLogloss(
+      held.map((p) => logistic(dot(betaExt, oddsFeaturesExtended(p, snapshot, medianAgeDays, categories)))),
       actual,
     ).brier;
   }
@@ -975,13 +1307,18 @@ function validateOdds(snapshot: Snapshot, medianAgeDays: number, categories: str
     global_brier: global.brier,
     five_fold_table_brier: fiveTable / 5,
     five_fold_logistic_brier: fiveLog / 5,
+    extended_logistic_brier: ext.brier,
+    extended_logistic_logloss: ext.logloss,
+    five_fold_extended_logistic_brier: fiveExt / 5,
   };
 }
 
 /**
  * The logistic launch-odds model: the eight most common categories, the most common as
  * the reference, the regression fitted on all 758 snapshot protocols and validated
- * against the radar-5 table on held-out splits.
+ * against the radar-5 table on held-out splits. The extended shape (chain count plus
+ * category-by-age interactions) replaces the plain one only when its five-fold Brier
+ * beats the plain logistic's.
  */
 export function fitLaunchOdds(snapshot: Snapshot): LogisticOdds {
   const counts = new Map<string, number>();
@@ -992,15 +1329,19 @@ export function fitLaunchOdds(snapshot: Snapshot): LogisticOdds {
     snapshot.protocols.map((p) => ageDays(snapshot.as_of, p.listed_at)).filter((d): d is number => d !== null),
     0,
   );
-  const coefficients = fitLogistic(snapshot.protocols, snapshot, medianAgeDays, categories);
   const validation = validateOdds(snapshot, medianAgeDays, categories);
-  return { reference_category: reference, categories: categories.slice(1), coefficients, median_age_days: medianAgeDays, validation };
+  const keepExtended = validation.five_fold_extended_logistic_brier < validation.five_fold_logistic_brier;
+  const coefficients = keepExtended
+    ? fitLogistic(snapshot.protocols, snapshot, medianAgeDays, categories, oddsFeaturesExtended)
+    : fitLogistic(snapshot.protocols, snapshot, medianAgeDays, categories);
+  return { reference_category: reference, categories: categories.slice(1), coefficients, median_age_days: medianAgeDays, validation, features: keepExtended ? 'extended' : 'base' };
 }
 
 /** The launch odds for one protocol: the fitted logistic model's probability. */
 export function launchOdds(p: SnapshotProtocol, snapshot: Snapshot, model: LogisticOdds): number {
   const categories = [model.reference_category, ...model.categories];
-  return logistic(dot(model.coefficients, oddsFeatures(p, snapshot, model.median_age_days, categories)));
+  const features = model.features === 'extended' ? oddsFeaturesExtended : oddsFeatures;
+  return logistic(dot(model.coefficients, features(p, snapshot, model.median_age_days, categories)));
 }
 
 /** A step as one string: its action, then its cost and time, within the gate's 20..600 characters. */
