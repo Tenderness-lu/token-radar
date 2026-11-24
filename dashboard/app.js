@@ -1,4 +1,4 @@
-// Token Radar's dashboard, radar-5. It reads window.RADAR (written beside dashboard/ by main.ts)
+// Token Radar's dashboard, radar-6. It reads window.RADAR (written beside dashboard/ by main.ts)
 // and renders the ranked board, a filterable table, a per-protocol detail drawer with the model's
 // own inputs and the protocol's farm plan, and the live-token protocols set aside below.
 // No network: every byte it shows is in data.js.
@@ -449,6 +449,17 @@
 
   function modelPanel() {
     var v = fit.validation;
+    var odds = DATA.odds;
+    var ov = odds.validation;
+    var oddsTerms = [
+      ['intercept', odds.coefficients[0], 'The level: a protocol at age zero, TVL $1, flat growth, in the reference category ' + odds.reference_category + '.'],
+      ['age in years', odds.coefficients[1], 'Each extra year raises the log-odds of launching by about ' + odds.coefficients[1].toFixed(2) + ': older protocols launch more often.'],
+      ['ln(TVL)', odds.coefficients[2], 'Size barely moves the odds once age is in: doubling TVL changes the log-odds by only ' + (odds.coefficients[2] * Math.log(2)).toFixed(2) + '.'],
+      ['tanh(7d growth / 30)', odds.coefficients[3], 'A hot week argues against a launch: fast TVL growth in the last week comes with lower odds, once age and size are held fixed.']
+    ];
+    odds.categories.forEach(function (cat, i) {
+      oddsTerms.push([cat + ' (vs ' + odds.reference_category + ')', odds.coefficients[4 + i], 'Category shift in log-odds against the reference category ' + odds.reference_category + '.']);
+    });
     var termRows = [
       ['intercept', c.intercept, 'The level: a protocol at TVL $1, flat growth, age zero would price at e^' + c.intercept.toFixed(2) + '. Read with the other terms, not alone.'],
       ['ln(TVL)', c.log_tvl, 'Doubling TVL lifts the fitted value by about ' + Math.round((Math.pow(2, c.log_tvl) - 1) * 100) + '%. Sub-linear: size matters, but not one for one.'],
@@ -460,7 +471,7 @@
       ['Leave-one-category-out', v.loco_protocols + ' protocols held out whole, ' + v.loco_categories + ' categories', v.loco_median_abs_log_error, v.loco_mean_abs_log_error, v.loco_r2],
       ['Leave-one-out', v.pool_size + ' refits, one protocol out at a time', v.loo_median_abs_log_error, null, v.loo_r2]
     ];
-    return h('section', { class: 'panel model' },
+    return h('section', { class: 'panel model', id: 'model-panel' },
       h('h2', { text: 'How the implied value is fitted — and how it is checked' }),
       h('p', { class: 'sub', text: 'The model is one linear regression, fitted at runtime on the ' + v.pool_size + ' live-token protocols that have a market cap, a TVL, a 7-day change and a listing date. Centralised exchanges are set aside from the fit (' + v.pool_excluded_cex + ' protocols): an exchange token prices the exchange, not the TVL on its books, and the board never scores an exchange. The target is log market cap. The fit reports its own held-out numbers, and the board uses the same fit for every row.' }),
       h('div', { class: 'formula' },
@@ -489,7 +500,7 @@
               );
             }))
           ),
-          h('p', { class: 'note', text: 'Train R² ' + v.train_r2.toFixed(2) + '. The held-out R² values sit near or below zero because one or two protocols carry market caps that ignore TVL entirely (a token locker at 19x its TVL, an allocator at 0.6% of it); squares let those two dominate, so the median is the robust read. Against radar-4 the medians improve on all three checks: 0.95 vs 1.23 random, 0.82 vs 1.20 by category, 0.97 vs 1.05 leave-one-out.' })
+          h('p', { class: 'note', text: 'Train R² ' + v.train_r2.toFixed(2) + '. The held-out R² values sit near or below zero because one or two protocols carry market caps that ignore TVL entirely (a token locker at 19x its TVL, an allocator at 0.6% of it); squares let those two dominate, so the median is the robust read. The value model is unchanged from radar-5: the same four terms, fitted on the same pool, so the medians are the same as radar-5\u2019s (0.95 random, 0.82 by category, 0.97 leave-one-out). Radar-6 tried fourteen alternatives to beat it and kept none; they are listed below.' })
         )
       ),
       h('div', null,
@@ -500,8 +511,26 @@
       h('div', null,
         h('h3', { text: 'Terms that were fitted and dropped' }),
         h('ul', { class: 'rejected' }, v.rejected.map(function (r) {
-          return h('li', null, h('b', { text: r.name + ': ' }), 'random-split median ' + r.test_median_abs_log_error.toFixed(2) + ', leave-one-out median ' + r.loo_median_abs_log_error.toFixed(2) + ' — ' + r.note + '.');
+          return h('li', null, h('b', { text: r.name + ': ' }), 'random-split median ' + r.test_median_abs_log_error.toFixed(2) + ', leave-one-category-out median ' + r.loco_median_abs_log_error.toFixed(2) + ', leave-one-out median ' + r.loo_median_abs_log_error.toFixed(2) + ' (base model: ' + v.test_median_abs_log_error.toFixed(2) + ' / ' + v.loco_median_abs_log_error.toFixed(2) + ' / ' + v.loo_median_abs_log_error.toFixed(2) + ') — ' + r.note + '.');
         }))
+      ),
+      h('div', null,
+        h('h3', { text: 'Launch odds: a logistic model, not a table' }),
+        h('p', { class: 'sub', text: 'Radar-5 read launch odds off an age-bucket by TVL-tier table. Radar-6 fits one logistic regression per protocol on launch (issued a token or not) over all 758 snapshot protocols, with age, log TVL, 7-day growth and category as features, and validates it against the old table on held-out splits. The logistic wins on Brier score on every one of the five hash quintiles, so the board carries the logistic odds.' }),
+        h('table', { class: 'diag-table' },
+          h('thead', null, h('tr', null, h('th', { scope: 'col', text: 'Term' }), h('th', { scope: 'col', text: 'Coefficient' }), h('th', { scope: 'col', text: 'What it says' }))),
+          h('tbody', null, oddsTerms.map(function (r) {
+            return h('tr', null, h('td', { class: 'num', text: r[0] }), h('td', { class: 'num', text: fmtSigned(r[1]) }), h('td', { text: r[2] }));
+          }))
+        ),
+        h('table', { class: 'diag-table' },
+          h('thead', null, h('tr', null, h('th', { scope: 'col', text: 'Held-out check' }), h('th', { scope: 'col', text: 'Brier, logistic' }), h('th', { scope: 'col', text: 'Brier, old table' }), h('th', { scope: 'col', text: 'Brier, global rate' }))),
+          h('tbody', null,
+            h('tr', null, h('td', null, h('b', { text: 'Fixed 80/20 split' }), h('div', { class: 'sub', text: ov.test_size + ' protocols held out' })), h('td', { class: 'num', text: ov.logistic_brier.toFixed(3) }), h('td', { class: 'num', text: ov.table_brier.toFixed(3) }), h('td', { class: 'num', text: ov.global_brier.toFixed(3) })),
+            h('tr', null, h('td', null, h('b', { text: 'Five-fold mean' }), h('div', { class: 'sub', text: 'each hash quintile held out in turn' })), h('td', { class: 'num', text: ov.five_fold_logistic_brier.toFixed(3) }), h('td', { class: 'num', text: ov.five_fold_table_brier.toFixed(3) }), h('td', { class: 'num', text: '—' }))
+          )
+        ),
+        h('p', { class: 'note', text: 'Lower Brier is better. On the fixed split the logistic scores ' + ov.logistic_brier.toFixed(3) + ' against the table’s ' + ov.table_brier.toFixed(3) + ' (log loss ' + ov.logistic_logloss.toFixed(3) + ' vs ' + ov.table_logloss.toFixed(3) + '); the global launch rate alone scores ' + ov.global_brier.toFixed(3) + '. Board odds run from the logistic model; a protocol with no listing date takes the pool’s median age (' + Math.round(odds.median_age_days) + ' days), the same imputation the fit uses.' })
       ),
       h('p', { class: 'sub', text: 'The model is rough — the median held-out miss is about a factor of ' + Math.exp(v.test_median_abs_log_error).toFixed(1) + 'x — so treat each implied value as an order of magnitude, not a price.' })
     );
@@ -544,7 +573,7 @@
         h('div', null, h('span', { text: 'total farm costs' }), h('b', { class: 'num', text: '$' + row.total_cost_usd })),
         h('div', { class: 'net-ev' }, h('span', { text: 'net expected value, after all costs' }), h('b', { class: 'num', text: fmtUsd(row.expected_value_usd) }))
       ),
-      h('p', { class: 'note', text: 'Model ' + fit.version + ': the same fit scores every protocol. The page recomputes this row as ' + fmtUsd(recomputed) + (recomputed === row.implied_value_usd ? ', the same number board.json carries.' : ', which differs from the board: the data would be stale.') + ' Odds come from the launch record of protocols with a similar age and TVL, not from a guess: older, larger peers launch more often.' })
+      h('p', { class: 'note', text: 'Model ' + fit.version + ': the same fit scores every protocol. The page recomputes this row as ' + fmtUsd(recomputed) + (recomputed === row.implied_value_usd ? ', the same number board.json carries.' : ', which differs from the board: the data would be stale.') + ' Odds come from a logistic regression fitted on all 758 snapshot protocols (age, log TVL, 7-day growth, category), not from a guess: older protocols launch more often, and a hot week argues against it.' })
     ));
     dialog.appendChild(h('section', { class: 'detail-section' },
       h('h3', { text: 'Farm plan' }),
