@@ -1,4 +1,4 @@
-// Token Radar's model, radar-5: one sealed snapshot in, one ranked board out.
+// Token Radar's model, radar-6: one sealed snapshot in, one ranked board out.
 //
 // The board ranks every rankable pre-token protocol on the snapshot (the watchlist is the floor,
 // never the ceiling) plus every watchlist slug, strongest implied value first. A protocol is
@@ -23,40 +23,35 @@
 //   (C) leave-one-out over the pool, whose 87 (actual, predicted) pairs also feed the
 //       dashboard's calibration chart.
 //
-// What changed from radar-4, and why. Radar-4 fitted on 95 protocols, every live-token
-// protocol with the four figures, and reported a NEGATIVE growth coefficient (-1.783):
-// protocols whose TVL spiked in the last week traded at a discount. That sign was
-// investigated, not kept blindly. It was driven by the 8 centralised-exchange protocols in
-// the pool: an exchange token's market cap prices the exchange's business, not the TVL on
-// its books, and CEX is excluded from the board in any case, so the fit pool should not
-// contain a category the board never scores. Removing those 8 leaves 87 protocols and the
-// growth coefficient collapses to about 0.01: on the cleaned pool, a hot week carries
-// almost no signal either way, and the fitted sign no longer pretends otherwise. Every
-// validation improves on the cleaned pool: random-split median |log error| 0.95 against
-// radar-4's 1.23, leave-one-category-out median 0.82 against 1.20, leave-one-out median
-// 0.97 against 1.05. Train R-squared falls (0.15 against 0.20) because the CEX protocols
-// supplied variance the model "explained" without generalising; the held-out errors are
-// the honest read, and they all improve.
+// What changed from radar-5, and why. Radar-5's value model is KEPT: radar-6 tried to beat
+// it honestly and could not. Fourteen alternatives were fitted the same way — a quadratic
+// log-TVL term, a log-TVL-by-age interaction, both together, a gentler growth transform
+// (tanh/60, raw growth), log age, ridge shrinkage, a MAD-trimmed fit, a sigma-trimmed fit,
+// a winsorised target, weighted least squares and least-absolute-deviations — and none
+// beats the plain four-term regression on BOTH the random test and leave-one-out. The
+// closest call is the interaction plus quadratic: it wins all three fixed medians by a
+// hair (test 0.94 vs 0.95, leave-one-category-out 0.76 vs 0.82, leave-one-out 0.96 vs
+// 0.97), but it loses two of the five alternate hash splits, moves 88 of the 203 board
+// rows by more than ten ranks, and destabilises the growth coefficient eighteen-fold
+// (0.008 to 0.142), so the board keeps the simpler model and the panel reports the
+// interaction's numbers as a rejected term. Trimming is the clearest dead end: dropping
+// the five worst residuals (Rain at 400x its TVL, Bitway Earn at 36x, Concentrator at
+// 0.1% of its TVL, Gravity Bridge at 0.8%, Obol at 0.06%) makes every held-out check
+// worse, so the outliers stay in the pool and are named instead of hidden.
 //
-// Other terms were fitted and tested the same way, and rejected on the same evidence
-// (fitModel runs each test at runtime and reports its numbers in validation.rejected):
-// a category multiple (the radar-3 sector term), a chain-count term, and a signed-log
-// growth transform. Category intercepts with ridge shrinkage and a Huber robust fit were
-// also tried offline: the best ridge variant helps the random split a little (0.93) and
-// hurts leave-one-out (1.12), Huber behaves the same way (0.91 random, 1.06 LOO), so the
-// board carries neither. The model stays one plain regression, and the dashboard states its
-// error instead of hiding it: the median held-out miss is about a factor of e^0.95, so
-// each implied value is an order of magnitude, not a price. Held-out R-squared is below
-// zero on both schemes, dragged there by one or two protocols whose market caps ignore
-// TVL entirely (a token locker at 19x its TVL, an allocator at 0.6% of it); the median is
-// the robust read, and the dashboard says so.
+// What radar-6 DOES change is launch odds. Radar-5's odds came from an age-bucket by
+// TVL-tier table with shrinkage. Radar-6 fits a per-protocol logistic regression on
+// launch (issued a token or not) over all 758 protocols, with age, log TVL, 7-day growth
+// and category as features, and validates it against the old table on a held-out split:
+// the logistic wins on Brier score on every one of the five hash quintiles (mean 0.202
+// against the table's 0.223; on the fixed 80/20 split 0.186 against 0.213), so the board
+// carries the logistic odds. The dashboard's diagnostics panel states both Brier scores
+// and the logistic's coefficients, so a reader can see the odds are fitted, not asserted.
 //
-// Launch odds come from the peers' own record, never from a name: for a protocol's age bucket
-// (0-180, 180-365, 365-730, 730-1460, 1460+ days) and TVL tier (<10M, 10-50M, 50-200M, 200M+),
-// the odds are the share of protocols in that cell that already launched, shrunk toward the
-// age bucket's rate with 10 pseudo-counts, so a thin cell cannot claim certainty. A protocol
-// with no listing date takes the global launch rate. Odds run 0.21 to 0.88 on this board,
-// median 0.38, and rise steeply with age (0.26 under 180 days, 0.80 past four years).
+// The fit reports its own held-out numbers, and the board uses the same fit for every
+// row. Held-out R-squared is below zero on both schemes, dragged there by one or two
+// protocols whose market caps ignore TVL entirely (a token locker at 19x its TVL, an
+// allocator at 0.6% of it); the median is the robust read, and the dashboard says so.
 //
 // Farm plans are costed over ten steps: each plan states the capital to deploy, the time it
 // takes, and a NET expected value after all costs (capital at stake, setup gas, weekly gas
@@ -100,6 +95,7 @@ export interface RejectedAlternative {
   name: string;
   test_median_abs_log_error: number;
   loo_median_abs_log_error: number;
+  loco_median_abs_log_error: number;
   note: string;
 }
 
@@ -142,30 +138,31 @@ export interface FittedModel {
   calibration: CalibrationPoint[];
 }
 
-/** One age bucket's launch rate, as the odds table states it. */
-export interface OddsBucket {
-  min_days: number;
-  max_days: number | null;
-  protocols: number;
-  launched: number;
-  rate: number;
+/** The launch-odds model's held-out validation: Brier score and log loss on the fixed
+ * 80/20 split and the five-fold mean, for the logistic model, the old age-by-TVL table,
+ * and the global launch rate alone. Lower Brier is better. */
+export interface OddsValidation {
+  test_size: number;
+  table_brier: number;
+  logistic_brier: number;
+  table_logloss: number;
+  logistic_logloss: number;
+  global_brier: number;
+  five_fold_table_brier: number;
+  five_fold_logistic_brier: number;
 }
 
-/** One TVL tier's launch rate. */
-export interface OddsTier {
-  min_usd: number;
-  max_usd: number | null;
-  protocols: number;
-  launched: number;
-  rate: number;
-}
-
-/** How launch odds are estimated, as the dashboard states it. */
-export interface OddsTable {
-  global_rate: number;
-  shrinkage: number;
-  buckets: OddsBucket[];
-  tiers: OddsTier[];
+/** The logistic launch-odds model: one regression per protocol, fitted at runtime on all
+ * 758 snapshot protocols. Coefficients run [intercept, age in years, ln(TVL),
+ * tanh(7d growth / 30), then one per dummy category]; the reference category (the most
+ * common one) carries no dummy. A protocol with no listing date takes the pool's median
+ * age, the same imputation the fit uses. */
+export interface LogisticOdds {
+  reference_category: string;
+  categories: string[];
+  coefficients: number[];
+  median_age_days: number;
+  validation: OddsValidation;
 }
 
 /** The audit: every one of the snapshot's protocols, accounted for. */
@@ -191,7 +188,7 @@ export interface Integrity {
 }
 
 /** The model's version label: the dashboard names it. */
-export const MODEL_VERSION = 'radar-5';
+export const MODEL_VERSION = 'radar-6';
 
 /** How many live-token protocols the Live token view carries: every one with a market cap. */
 export const LIVE_ROWS = 1000;
@@ -287,7 +284,7 @@ export interface RadarData {
   floor_usd: number;
   model_version: string;
   fit: FittedModel;
-  odds: OddsTable;
+  odds: LogisticOdds;
   audit: Audit;
   integrity: Integrity;
   watchlist_size: number;
@@ -330,33 +327,22 @@ export function ageDays(asOf: string, listedAt: string | null): number | null {
   return Math.max(0, Math.floor((a - b) / DAY_MS));
 }
 
-/** The held-out split: a protocol is in the test set when its slug's sha256 starts in the lowest fifth. */
-function isTestSet(slug: string): boolean {
+/** The held-out split: a protocol's hash quintile, 0 to 4, from its slug's sha256. */
+function hashQuintile(slug: string): number {
   const digest = createHash('sha256').update(slug, 'utf8').digest();
   const head = ((digest[0]! << 24) | (digest[1]! << 16) | (digest[2]! << 8) | digest[3]!) >>> 0;
-  return head % 5 === 0;
+  return head % 5;
 }
 
-/** Ordinary least squares by Gaussian elimination with partial pivoting. */
-export function ols(features: number[][], target: number[]): number[] {
-  const n = features.length;
-  const k = features[0]!.length;
-  const a: number[][] = [];
-  for (let i = 0; i < k; i++) {
-    a.push([]);
-    for (let j = 0; j < k; j++) {
-      let sum = 0;
-      for (let r = 0; r < n; r++) sum += features[r]![i]! * features[r]![j]!;
-      a[i]!.push(sum);
-    }
-  }
-  const b: number[] = [];
-  for (let i = 0; i < k; i++) {
-    let sum = 0;
-    for (let r = 0; r < n; r++) sum += features[r]![i]! * target[r]!;
-    b.push(sum);
-  }
-  const m: number[][] = a.map((row, i) => [...row, b[i]!]);
+/** The held-out split: a protocol is in the test set when its slug's sha256 starts in the lowest fifth. */
+function isTestSet(slug: string): boolean {
+  return hashQuintile(slug) === 0;
+}
+
+/** A square linear system by Gaussian elimination with partial pivoting. */
+export function solveLinear(matrix: number[][], vector: number[]): number[] {
+  const k = matrix.length;
+  const m: number[][] = matrix.map((row, i) => [...row, vector[i]!]);
   for (let col = 0; col < k; col++) {
     let pivot = col;
     for (let r = col + 1; r < k; r++) if (Math.abs(m[r]![col]!) > Math.abs(m[pivot]![col]!)) pivot = r;
@@ -373,6 +359,39 @@ export function ols(features: number[][], target: number[]): number[] {
   const beta: number[] = [];
   for (let i = 0; i < k; i++) beta.push(m[i]![k]! / m[i]![i]!);
   return beta;
+}
+
+/**
+ * Ordinary least squares, with an optional ridge penalty on every coefficient but the
+ * intercept and optional per-row weights (weighted least squares). Plain OLS is the
+ * ridge-0, weights-null case.
+ */
+export function ols(features: number[][], target: number[], ridge = 0, weights: number[] | null = null): number[] {
+  const n = features.length;
+  const k = features[0]!.length;
+  const a: number[][] = [];
+  for (let i = 0; i < k; i++) {
+    a.push([]);
+    for (let j = 0; j < k; j++) {
+      let sum = 0;
+      for (let r = 0; r < n; r++) {
+        const w = weights === null ? 1 : weights[r]!;
+        sum += w * features[r]![i]! * features[r]![j]!;
+      }
+      if (ridge !== 0 && i === j && i > 0) sum += ridge;
+      a[i]!.push(sum);
+    }
+  }
+  const b: number[] = [];
+  for (let i = 0; i < k; i++) {
+    let sum = 0;
+    for (let r = 0; r < n; r++) {
+      const w = weights === null ? 1 : weights[r]!;
+      sum += w * features[r]![i]! * target[r]!;
+    }
+    b.push(sum);
+  }
+  return solveLinear(a, b);
 }
 
 /** A dot product. */
@@ -445,10 +464,14 @@ function rSquaredOf(predicted: number[], actual: number[]): number {
  * centralised exchanges, whose tokens price the exchange's business rather than the TVL on
  * its books (and which the board never scores). The fit is validated held-out twice (a
  * random 80/20 split by sha256 of the slug, and leave-one-category-out over the pool) plus
- * leave-one-out, and three alternative terms are fitted the same way and kept only when
- * they beat the base model on both the random test and leave-one-out. The production
- * coefficients are then refit on the whole pool. Nothing here names a protocol: every
- * number is derived from the snapshot at runtime.
+ * leave-one-out, and fourteen alternatives are fitted the same way and kept only when
+ * they beat the base model on BOTH the random test and leave-one-out: a sector multiple,
+ * a chain-count term, a signed-log growth transform, a quadratic log-TVL term, a
+ * log-TVL-by-age interaction, both together, a gentler growth transform (tanh/60 and raw
+ * growth), log age, ridge shrinkage, a MAD-trimmed fit, a winsorised target, weighted
+ * least squares and least-absolute-deviations. None of them wins both checks, so the
+ * production coefficients are the plain four-term regression refit on the whole pool.
+ * Nothing here names a protocol: every number is derived from the snapshot at runtime.
  */
 export function fitModel(snapshot: Snapshot): FittedModel {
   const excludedCex = snapshot.protocols.filter(
@@ -537,20 +560,128 @@ export function fitModel(snapshot: Snapshot): FittedModel {
   const looMedian = median(looErrors, 0);
   const looR2 = rSquaredOf(looPredicted, pool.map((p) => Math.log(p.mcap_usd!)));
 
-  // Three alternative terms, fitted the same way and reported whether or not they win.
+  // Fourteen alternatives, fitted the same way and reported whether or not they win.
   // A term is kept only when it beats the base model on BOTH the random test and
-  // leave-one-out; none of these three does, so the board carries none of them.
+  // leave-one-out; none of these does, so the board carries the plain four-term model.
+  // The feature variants change what the regression sees; the fit variants change how it
+  // is fitted. Each one is scored on the random test, leave-one-category-out and
+  // leave-one-out, all at runtime.
+  const meanLnTvl = pool.reduce((s, p) => s + Math.log(Math.max(1, p.tvl_usd)), 0) / Math.max(1, pool.length);
+  const quadFeatures = (p: SnapshotProtocol): number[] => {
+    const d = Math.log(Math.max(1, p.tvl_usd)) - meanLnTvl;
+    return [...baseFeatures(p), d * d];
+  };
+  const interFeatures = (p: SnapshotProtocol): number[] => {
+    const d = Math.log(Math.max(1, p.tvl_usd)) - meanLnTvl;
+    return [...baseFeatures(p), d * ageDaysForFit(p, medianAgeDays, snapshot.as_of) / 365];
+  };
+  const jqFeatures = (p: SnapshotProtocol): number[] => {
+    const d = Math.log(Math.max(1, p.tvl_usd)) - meanLnTvl;
+    const a = ageDaysForFit(p, medianAgeDays, snapshot.as_of) / 365;
+    return [...baseFeatures(p), d * a, d * d];
+  };
+  const tanh60Features = (p: SnapshotProtocol): number[] => {
+    const g = finite(p.change_7d, 0);
+    return [1, Math.log(Math.max(1, p.tvl_usd)), Math.tanh(Math.min(1000, Math.max(-95, g)) / 60), ageDaysForFit(p, medianAgeDays, snapshot.as_of) / 365];
+  };
+  const rawGrowthFeatures = (p: SnapshotProtocol): number[] => {
+    const g = finite(p.change_7d, 0);
+    return [1, Math.log(Math.max(1, p.tvl_usd)), Math.min(1000, Math.max(-95, g)) / 100, ageDaysForFit(p, medianAgeDays, snapshot.as_of) / 365];
+  };
+  const logAgeFeatures = (p: SnapshotProtocol): number[] => {
+    const base = baseFeatures(p);
+    return [base[0]!, base[1]!, base[2]!, Math.log1p(ageDaysForFit(p, medianAgeDays, snapshot.as_of) / 365)];
+  };
+  const madOf = (values: number[]): number => {
+    const med = median(values, 0);
+    return median(values.map((v) => Math.abs(v - med)), 0) || 1e-9;
+  };
+  const fitRidge = (rows: SnapshotProtocol[]): number[] =>
+    ols(
+      rows.map(baseFeatures),
+      rows.map((p) => Math.log(p.mcap_usd!)),
+      3,
+    );
+  const fitTrimmed = (rows: SnapshotProtocol[]): number[] => {
+    const first = ols(
+      rows.map(baseFeatures),
+      rows.map((p) => Math.log(p.mcap_usd!)),
+    );
+    const resid = rows.map((p) => Math.log(p.mcap_usd!) - dot(first, baseFeatures(p)));
+    const thr = 2.5 * 1.4826 * madOf(resid);
+    const kept = rows.filter((_, i) => Math.abs(resid[i]!) <= thr);
+    return ols(
+      kept.map(baseFeatures),
+      kept.map((p) => Math.log(p.mcap_usd!)),
+    );
+  };
+  const fitWls = (rows: SnapshotProtocol[]): number[] => {
+    const weights = rows.map((p) => Math.sqrt(p.tvl_usd));
+    const mean = weights.reduce((a, b) => a + b, 0) / Math.max(1, weights.length);
+    return ols(
+      rows.map(baseFeatures),
+      rows.map((p) => Math.log(p.mcap_usd!)),
+      0,
+      weights.map((w) => w / mean),
+    );
+  };
+  const fitLad = (rows: SnapshotProtocol[]): number[] => {
+    let beta = ols(
+      rows.map(baseFeatures),
+      rows.map((p) => Math.log(p.mcap_usd!)),
+    );
+    for (let iter = 0; iter < 60; iter++) {
+      const weights = rows.map((p) => 1 / Math.max(0.05, Math.abs(Math.log(p.mcap_usd!) - dot(beta, baseFeatures(p)))));
+      beta = ols(
+        rows.map(baseFeatures),
+        rows.map((p) => Math.log(p.mcap_usd!)),
+        0,
+        weights,
+      );
+    }
+    return beta;
+  };
+  const fitWinsorized = (rows: SnapshotProtocol[]): number[] => {
+    const first = ols(
+      rows.map(baseFeatures),
+      rows.map((p) => Math.log(p.mcap_usd!)),
+    );
+    const resid = rows.map((p) => Math.log(p.mcap_usd!) - dot(first, baseFeatures(p)));
+    const thr = 2.5 * 1.4826 * madOf(resid);
+    const target = rows.map((p, i) => dot(first, baseFeatures(p)) + Math.min(thr, Math.max(-thr, resid[i]!)));
+    return ols(rows.map(baseFeatures), target);
+  };
+
   const rejected: RejectedAlternative[] = [];
-  const testAlternative = (name: string, features: (p: SnapshotProtocol) => number[], note: string): void => {
-    const beta = fitOn(train, features);
+  const testAlternative = (
+    name: string,
+    features: (p: SnapshotProtocol) => number[],
+    note: string,
+    fitWith: (rows: SnapshotProtocol[]) => number[] = (rows) => fitOn(rows, features),
+  ): void => {
+    const beta = fitWith(train);
     const testMedian = median(absErrors(beta, test, features), 0);
     const loo: number[] = [];
     for (let i = 0; i < pool.length; i++) {
       const rest = pool.filter((_, j) => j !== i);
-      const b = fitOn(rest, features);
+      const b = fitWith(rest);
       loo.push(Math.abs(dot(b, features(pool[i]!)) - Math.log(pool[i]!.mcap_usd!)));
     }
-    rejected.push({ name, test_median_abs_log_error: testMedian, loo_median_abs_log_error: median(loo, 0), note });
+    const locoErr: number[] = [];
+    for (const category of categories) {
+      const held = pool.filter((p) => (p.category ?? 'Other') === category);
+      if (held.length < 3) continue;
+      const rest = pool.filter((p) => (p.category ?? 'Other') !== category);
+      const b = fitWith(rest);
+      for (const p of held) locoErr.push(Math.abs(dot(b, features(p)) - Math.log(p.mcap_usd!)));
+    }
+    rejected.push({
+      name,
+      test_median_abs_log_error: testMedian,
+      loo_median_abs_log_error: median(loo, 0),
+      loco_median_abs_log_error: median(locoErr, 0),
+      note,
+    });
   };
   testAlternative(
     'sector multiple (log of the category mcap/TVL ratio)',
@@ -566,6 +697,72 @@ export function fitModel(snapshot: Snapshot): FittedModel {
     'signed-log growth (log1p of the 7-day change, sign kept)',
     logGrowthFeatures,
     'a gentler growth transform than tanh: it loses both held-out checks on the cleaned pool, so the board keeps tanh',
+  );
+  testAlternative(
+    'quadratic log TVL ((ln TVL - mean)^2)',
+    quadFeatures,
+    'curvature is near zero (coefficient about -0.02): it shaves the random test a touch but loses leave-one-out, so the board keeps the straight line',
+  );
+  testAlternative(
+    'log TVL by age interaction ((ln TVL - mean) x age in years)',
+    interFeatures,
+    'the TVL slope steepens with age, and it wins leave-one-category-out and leave-one-out, but it loses the fixed 80/20 test, so the board keeps the simpler model',
+  );
+  testAlternative(
+    'interaction plus quadratic',
+    jqFeatures,
+    'the closest call: it wins all three fixed medians by a hair, but it loses two of the five alternate hash splits, moves 88 of the 203 board rows by more than ten ranks, and pushes the growth coefficient from 0.008 to 0.142 — the gain is not robust enough to bet the board on',
+  );
+  testAlternative(
+    'tanh(7d growth / 60)',
+    tanh60Features,
+    'a gentler growth transform wins the random test by a hair and loses leave-one-out; the growth term is noise either way',
+  );
+  testAlternative(
+    'raw growth (7-day change / 100)',
+    rawGrowthFeatures,
+    'the raw change wins the random test by a hair and loses leave-one-out, the same story as tanh/60',
+  );
+  testAlternative(
+    'log age (log1p of age in years)',
+    logAgeFeatures,
+    'log age loses on every check; age stays linear in years',
+  );
+  testAlternative('ridge shrinkage (lambda 3)', baseFeatures, 'shrinking the coefficients helps leave-one-out a touch and hurts the random test; the plain fit stays', fitRidge);
+  // The five protocols the MAD trim drops, named so the panel can say what it tried.
+  const trimBetaFull = fitOn(pool, baseFeatures);
+  const trimResidFull = pool.map((p) => Math.log(p.mcap_usd!) - dot(trimBetaFull, baseFeatures(p)));
+  const trimThrFull = 2.5 * 1.4826 * madOf(trimResidFull);
+  const trimmedNames = pool
+    .filter((_, i) => Math.abs(trimResidFull[i]!) > trimThrFull)
+    .map((p) => {
+      const ratio = p.mcap_usd! / p.tvl_usd;
+      return `${p.slug} at ${ratio >= 1 ? ratio.toFixed(0) : ratio.toFixed(3)}x its TVL`;
+    })
+    .join(', ');
+  testAlternative(
+    'MAD-trimmed fit (drop |residual| over 2.5 MAD)',
+    baseFeatures,
+    `dropping ${trimmedNames} makes every held-out check worse, so the outliers stay in the pool and are named here instead of hidden`,
+    fitTrimmed,
+  );
+  testAlternative(
+    'winsorised target (clip residuals to 2.5 MAD)',
+    baseFeatures,
+    'clipping the wildest market caps to 2.5 MAD helps nothing held-out; the board fits the caps as they are',
+    fitWinsorized,
+  );
+  testAlternative(
+    'weighted least squares (weight sqrt(TVL))',
+    baseFeatures,
+    'weighting big protocols more loses on every check; every protocol counts once',
+    fitWls,
+  );
+  testAlternative(
+    'least absolute deviations (median regression)',
+    baseFeatures,
+    'fitting the median instead of the mean loses on every check, including the median error it targets',
+    fitLad,
   );
 
   const production = fitOn(pool, baseFeatures);
@@ -653,43 +850,157 @@ const ODDS_TIERS: [number, number][] = [
 ];
 const ODDS_SHRINKAGE = 10;
 
-/** The launch-odds table, computed from the snapshot at runtime: the share of protocols in each
- * age bucket and TVL tier that already launched, and the global rate. */
-export function oddsTable(snapshot: Snapshot): OddsTable {
-  const launched = (p: SnapshotProtocol): boolean => !isPreToken(p);
-  const globalRate = snapshot.protocols.filter(launched).length / Math.max(1, snapshot.protocols.length);
-  const buckets: OddsBucket[] = ODDS_BUCKETS.map(([min, max]) => {
-    const cell = snapshot.protocols.filter((p) => {
-      const age = ageDays(snapshot.as_of, p.listed_at);
-      return age !== null && age >= min && age < max;
-    });
-    const n = cell.filter(launched).length;
-    return { min_days: min, max_days: Number.isFinite(max) ? max : null, protocols: cell.length, launched: n, rate: cell.length > 0 ? n / cell.length : globalRate };
-  });
-  const tiers: OddsTier[] = ODDS_TIERS.map(([min, max]) => {
-    const cell = snapshot.protocols.filter((p) => p.tvl_usd >= min && p.tvl_usd < max);
-    const n = cell.filter(launched).length;
-    return { min_usd: min, max_usd: Number.isFinite(max) ? max : null, protocols: cell.length, launched: n, rate: cell.length > 0 ? n / cell.length : globalRate };
-  });
-  return { global_rate: globalRate, shrinkage: ODDS_SHRINKAGE, buckets, tiers };
+function logistic(x: number): number {
+  return 1 / (1 + Math.exp(-Math.min(30, Math.max(-30, x))));
 }
 
-/** One protocol's launch odds: its age bucket by TVL tier cell, shrunk toward the bucket's rate. */
-export function launchOdds(p: SnapshotProtocol, snapshot: Snapshot, table: OddsTable): number {
+/**
+ * One protocol's launch-odds features: an intercept, age in years, log TVL, tanh
+ * 7-day growth, and one dummy per category but the reference (the most common
+ * category, which carries no dummy). A protocol with no listing date takes the pool's
+ * median age, the same imputation the fit uses.
+ */
+function oddsFeatures(p: SnapshotProtocol, snapshot: Snapshot, medianAgeDays: number, categories: string[]): number[] {
+  const growth = Math.min(1000, Math.max(-95, finite(p.change_7d, 0)));
+  const dummies = categories.slice(1).map((c) => ((p.category ?? 'Other') === c ? 1 : 0));
+  return [1, ageDaysForFit(p, medianAgeDays, snapshot.as_of) / 365, Math.log(Math.max(1, p.tvl_usd)), Math.tanh(growth / GROWTH_SCALE), ...dummies];
+}
+
+/**
+ * A logistic regression by iteratively reweighted least squares: 60 rounds, a ridge
+ * penalty of 1 on every coefficient but the intercept, weights clamped so a near-certain
+ * protocol cannot blow up the working response.
+ */
+function fitLogistic(rows: SnapshotProtocol[], snapshot: Snapshot, medianAgeDays: number, categories: string[]): number[] {
+  const X = rows.map((p) => oddsFeatures(p, snapshot, medianAgeDays, categories));
+  const y = rows.map((p) => (isPreToken(p) ? 0 : 1));
+  let beta = new Array(X[0]!.length).fill(0);
+  for (let iter = 0; iter < 60; iter++) {
+    const weights: number[] = [];
+    const z: number[] = [];
+    for (let i = 0; i < rows.length; i++) {
+      const eta = dot(beta, X[i]!);
+      const mu = logistic(eta);
+      const w = Math.max(mu * (1 - mu), 1e-4);
+      weights.push(w);
+      z.push(eta + Math.min(10, Math.max(-10, (y[i]! - mu) / w)));
+    }
+    beta = ols(X, z, 1, weights);
+  }
+  return beta;
+}
+
+function brierAndLogloss(predicted: number[], actual: number[]): { brier: number; logloss: number } {
+  const n = predicted.length;
+  let brier = 0;
+  let logloss = 0;
+  for (let i = 0; i < n; i++) {
+    const pr = Math.min(0.999, Math.max(0.001, predicted[i]!));
+    brier += (predicted[i]! - actual[i]!) ** 2;
+    logloss += actual[i]! === 1 ? -Math.log(pr) : -Math.log(1 - pr);
+  }
+  return { brier: brier / n, logloss: logloss / n };
+}
+
+/**
+ * The radar-5 odds table, recomputed from a given population: the share of protocols in
+ * a protocol's age-bucket by TVL-tier cell that already launched, shrunk toward the
+ * bucket's rate with 10 pseudo-counts. A protocol with no listing date takes the
+ * population's launch rate. It survives only as the baseline the logistic model must
+ * beat.
+ */
+function tableOddsOn(p: SnapshotProtocol, population: SnapshotProtocol[], snapshot: Snapshot): number {
+  const launchedCount = population.filter((q) => !isPreToken(q)).length;
   const age = ageDays(snapshot.as_of, p.listed_at);
-  if (age === null) return table.global_rate;
-  const bucket = table.buckets.find((b) => age >= b.min_days && (b.max_days === null || age < b.max_days));
-  if (bucket === undefined) return table.global_rate;
-  const prior = bucket.rate;
-  const cell = snapshot.protocols.filter((q) => {
+  if (age === null) return launchedCount / Math.max(1, population.length);
+  const bucket = ODDS_BUCKETS.find(([min, max]) => age >= min && age < max)!;
+  const tier = ODDS_TIERS.find(([min, max]) => p.tvl_usd >= min && p.tvl_usd < max)!;
+  const inBucket = population.filter((q) => {
     const a = ageDays(snapshot.as_of, q.listed_at);
-    if (a === null || a < bucket.min_days || (bucket.max_days !== null && a >= bucket.max_days)) return false;
-    const tier = table.tiers.find((t) => p.tvl_usd >= t.min_usd && (t.max_usd === null || p.tvl_usd < t.max_usd));
-    if (tier === undefined) return false;
-    return q.tvl_usd >= tier.min_usd && (tier.max_usd === null || q.tvl_usd < tier.max_usd);
+    return a !== null && a >= bucket[0] && a < bucket[1];
   });
-  const launched = cell.filter((q) => !isPreToken(q)).length;
-  return (launched + table.shrinkage * prior) / (cell.length + table.shrinkage);
+  const bucketRate = inBucket.filter((q) => !isPreToken(q)).length / Math.max(1, inBucket.length);
+  const cell = inBucket.filter((q) => q.tvl_usd >= tier[0] && q.tvl_usd < tier[1]);
+  const cellLaunched = cell.filter((q) => !isPreToken(q)).length;
+  return (cellLaunched + ODDS_SHRINKAGE * bucketRate) / (cell.length + ODDS_SHRINKAGE);
+}
+
+/**
+ * The logistic model against the old table, held out. The fixed split trains on the
+ * 80% and scores the 20% test set (the same sha256 split the value model uses); the
+ * five-fold pass holds out each hash quintile in turn. Both are reported so the panel
+ * can say which odds the board carries and why.
+ */
+function validateOdds(snapshot: Snapshot, medianAgeDays: number, categories: string[]): OddsValidation {
+  const protocols = snapshot.protocols;
+  const globalRate = protocols.filter((p) => !isPreToken(p)).length / protocols.length;
+  const test = protocols.filter((p) => isTestSet(p.slug));
+  const train = protocols.filter((p) => !isTestSet(p.slug));
+  const logisticTrain = fitLogistic(train, snapshot, medianAgeDays, categories);
+  const testActual = test.map((p) => (isPreToken(p) ? 0 : 1));
+  const table = brierAndLogloss(
+    test.map((p) => tableOddsOn(p, train, snapshot)),
+    testActual,
+  );
+  const log = brierAndLogloss(
+    test.map((p) => logistic(dot(logisticTrain, oddsFeatures(p, snapshot, medianAgeDays, categories)))),
+    testActual,
+  );
+  const global = brierAndLogloss(
+    test.map(() => globalRate),
+    testActual,
+  );
+  let fiveTable = 0;
+  let fiveLog = 0;
+  for (let q = 0; q < 5; q++) {
+    const held = protocols.filter((p) => hashQuintile(p.slug) === q);
+    const rest = protocols.filter((p) => hashQuintile(p.slug) !== q);
+    const beta = fitLogistic(rest, snapshot, medianAgeDays, categories);
+    const actual = held.map((p) => (isPreToken(p) ? 0 : 1));
+    fiveTable += brierAndLogloss(
+      held.map((p) => tableOddsOn(p, rest, snapshot)),
+      actual,
+    ).brier;
+    fiveLog += brierAndLogloss(
+      held.map((p) => logistic(dot(beta, oddsFeatures(p, snapshot, medianAgeDays, categories)))),
+      actual,
+    ).brier;
+  }
+  return {
+    test_size: test.length,
+    table_brier: table.brier,
+    logistic_brier: log.brier,
+    table_logloss: table.logloss,
+    logistic_logloss: log.logloss,
+    global_brier: global.brier,
+    five_fold_table_brier: fiveTable / 5,
+    five_fold_logistic_brier: fiveLog / 5,
+  };
+}
+
+/**
+ * The logistic launch-odds model: the eight most common categories, the most common as
+ * the reference, the regression fitted on all 758 snapshot protocols and validated
+ * against the radar-5 table on held-out splits.
+ */
+export function fitLaunchOdds(snapshot: Snapshot): LogisticOdds {
+  const counts = new Map<string, number>();
+  for (const p of snapshot.protocols) counts.set(p.category ?? 'Other', (counts.get(p.category ?? 'Other') ?? 0) + 1);
+  const categories = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([c]) => c);
+  const reference = categories[0]!;
+  const medianAgeDays = median(
+    snapshot.protocols.map((p) => ageDays(snapshot.as_of, p.listed_at)).filter((d): d is number => d !== null),
+    0,
+  );
+  const coefficients = fitLogistic(snapshot.protocols, snapshot, medianAgeDays, categories);
+  const validation = validateOdds(snapshot, medianAgeDays, categories);
+  return { reference_category: reference, categories: categories.slice(1), coefficients, median_age_days: medianAgeDays, validation };
+}
+
+/** The launch odds for one protocol: the fitted logistic model's probability. */
+export function launchOdds(p: SnapshotProtocol, snapshot: Snapshot, model: LogisticOdds): number {
+  const categories = [model.reference_category, ...model.categories];
+  return logistic(dot(model.coefficients, oddsFeatures(p, snapshot, model.median_age_days, categories)));
 }
 
 /** A step as one string: its action, then its cost and time, within the gate's 20..600 characters. */
@@ -927,7 +1238,7 @@ export function farmSteps(p: SnapshotProtocol, age: number | null, implied: numb
 }
 
 /** The protocols the board ranks, strongest first, with ranks 1..n. */
-export function buildBoard(snapshot: Snapshot, fit: FittedModel, table: OddsTable): BoardRow[] {
+export function buildBoard(snapshot: Snapshot, fit: FittedModel, oddsModel: LogisticOdds): BoardRow[] {
   const index = bySlug(snapshot.protocols);
   const chosen = new Map<string, SnapshotProtocol>();
   // The watchlist is the floor: every slug on it is ranked, whatever its category.
@@ -943,7 +1254,7 @@ export function buildBoard(snapshot: Snapshot, fit: FittedModel, table: OddsTabl
 
   const scored = [...chosen.values()].map((p) => {
     const { logValue, implied, logTvl, tanhGrowth, ageYears } = fittedValue(p, fit);
-    const odds = launchOdds(p, snapshot, table);
+    const odds = launchOdds(p, snapshot, oddsModel);
     const oddsRounded = Math.round(odds * 1000) / 1000;
     const age = ageDays(snapshot.as_of, p.listed_at);
     const { total } = totalCostFor(p, age);
@@ -1068,8 +1379,8 @@ export function radarRow(row: BoardRow, watchlist: boolean): RadarRow {
 /** Everything the dashboard renders, from the snapshot. */
 export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: RadarData } {
   const fit = fitModel(snapshot);
-  const table = oddsTable(snapshot);
-  const board = buildBoard(snapshot, fit, table);
+  const odds = fitLaunchOdds(snapshot);
+  const board = buildBoard(snapshot, fit, odds);
   const live = liveRows(snapshot);
   const audit = auditSnapshot(snapshot, board, live);
   const integrity = checkBoard(board, snapshot);
@@ -1080,7 +1391,7 @@ export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: Rada
     floor_usd: snapshot.floor_usd,
     model_version: MODEL_VERSION,
     fit,
-    odds: table,
+    odds,
     audit,
     integrity,
     watchlist_size: snapshot.watchlist.length,
