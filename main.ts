@@ -1,8 +1,8 @@
 // Token Radar's runner (Node 22, standard library only).
 //
 // Reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>), scores every pre-token
-// protocol with the radar-3 model in lib/model.ts, writes the ranked board to /output/board.json and
-// the dashboard's data beside it, copies this repository's dashboard/ and screenshots/ to /output,
+// protocol with the radar-4 fitted model in lib/model.ts, writes the ranked board to /output/board.json
+// and the dashboard's data beside it, copies this repository's dashboard/ and screenshots/ to /output,
 // and writes /output/dossier.json with the vendored make.fun library.
 //
 // The dashboard is a static page with no network: dashboard/index.html, dashboard/app.css and
@@ -49,7 +49,7 @@ if (issue !== null) {
 }
 
 mkdirSync(out, { recursive: true });
-writeFileSync(join(out, 'board.json'), `${JSON.stringify({ rows: board })}\n`);
+writeFileSync(join(out, 'board.json'), `${JSON.stringify({ rows: board, fit: radar.fit, audit: radar.audit })}\n`);
 writeFileSync(join(out, 'data.js'), dataScript(radar));
 
 /** Copy one directory's regular files into `to`, skipping names that start with a dot. */
@@ -84,6 +84,7 @@ for (const name of shots) {
 writeFileSync(join(out, 'dossier.json'), buildDossier(out, { text_max_bytes: TEXT_MAX_BYTES, screenshots: SCREENSHOT_CAPS, dashboard: { max_files: 400, max_bytes: 4_194_304 } }));
 
 process.stdout.write(
-  `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.early_size} early, ${radar.live_size} live set aside)\n` +
+  `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.live_size} live with a market cap set aside)\n` +
+    `token radar: fit on ${radar.fit.validation.pool_size} live-token protocols, test median |log error| ${radar.fit.validation.test_median_abs_log_error.toFixed(3)}, sector ${radar.fit.validation.sector_kept ? 'kept' : 'dropped'}\n` +
     `token radar: wrote ${join(out, 'board.json')}, ${join(out, 'data.js')}, ${join(out, 'dashboard')} (${dashFiles.length} files), ${join(out, 'screenshots')} (${shots.length} images) and ${join(out, 'dossier.json')}\n`,
 );
