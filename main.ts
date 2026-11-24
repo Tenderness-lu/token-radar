@@ -1,7 +1,7 @@
 // Token Radar's runner (Node 22, standard library only).
 //
 // Reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>), scores every pre-token
-// protocol with the radar-6 fitted model in lib/model.ts, writes the ranked board to /output/board.json
+// protocol with the radar-7 fitted model in lib/model.ts, writes the ranked board to /output/board.json
 // and the dashboard's data beside it, copies this repository's dashboard/ and screenshots/ to /output,
 // and writes /output/dossier.json with the vendored make.fun library.
 //
@@ -85,7 +85,8 @@ writeFileSync(join(out, 'dossier.json'), buildDossier(out, { text_max_bytes: TEX
 
 process.stdout.write(
   `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.live_size} live with a market cap set aside)\n` +
+    `token radar: kept model ${radar.fit.features} (five-split search: ${radar.fit.validation.five_split.map((c) => `${c.name} ${c.wins}/5 wins, ${c.rank_moves_over_10} rank moves`).join('; ')})\n` +
     `token radar: fit on ${radar.fit.validation.pool_size} live-token protocols (${radar.fit.validation.pool_excluded_cex} CEX set aside), test median |log error| ${radar.fit.validation.test_median_abs_log_error.toFixed(3)}, leave-one-category-out median ${radar.fit.validation.loco_median_abs_log_error.toFixed(3)}, LOO median ${radar.fit.validation.loo_median_abs_log_error.toFixed(3)}\n` +
-    `token radar: launch odds are logistic (Brier ${radar.odds.validation.logistic_brier.toFixed(4)} on ${radar.odds.validation.test_size} held out, five-fold ${radar.odds.validation.five_fold_logistic_brier.toFixed(4)}) against the radar-5 table (${radar.odds.validation.table_brier.toFixed(4)}, five-fold ${radar.odds.validation.five_fold_table_brier.toFixed(4)})\n` +
+    `token radar: launch odds are logistic (${radar.odds.features}) (Brier ${radar.odds.validation.logistic_brier.toFixed(4)} on ${radar.odds.validation.test_size} held out, five-fold ${radar.odds.validation.five_fold_logistic_brier.toFixed(4)}; extended Brier ${radar.odds.validation.extended_logistic_brier.toFixed(4)}, five-fold ${radar.odds.validation.five_fold_extended_logistic_brier.toFixed(4)}) against the radar-5 table (${radar.odds.validation.table_brier.toFixed(4)}, five-fold ${radar.odds.validation.five_fold_table_brier.toFixed(4)})\n` +
     `token radar: wrote ${join(out, 'board.json')}, ${join(out, 'data.js')}, ${join(out, 'dashboard')} (${dashFiles.length} files), ${join(out, 'screenshots')} (${shots.length} images) and ${join(out, 'dossier.json')}\n`,
 );
