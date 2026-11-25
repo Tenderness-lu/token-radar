@@ -56,6 +56,19 @@
 // model's limits and how to use the radar. Third, the dashboard gains a top-ten
 // strip by expected value and farm cost and reward columns on the board table.
 
+// What radar-9 changes. First, the value model gets one more idea from the
+// leaderboard's top entries: a LOO-fitted ridge with a named-outlier trim. The
+// trim is taken from the leave-one-out residuals of the base fit (drop
+// |residual| over 2.5 x 1.4826 x MAD), the trimmed protocols are named in the
+// panel, and ridge lambda is tuned by LOO on the trimmed pool. It replaces the
+// base only on the same two bars as every other candidate: four of five split
+// wins AND fewer than twenty board rows moved by more than ten ranks. Second,
+// every row carries an uncertainty band from the kept model's LOO residuals:
+// the 25th and 75th percentiles of the signed residuals, so the middle half of
+// the model's misses, as a low and a high implied value beside the point
+// estimate. The band is the same proportional width on every row, because the
+// model's relative error does not depend on the protocol.
+
 // The fit reports its own held-out numbers, and the board uses the same fit for every
 // row. Held-out R-squared is below zero on both schemes, dragged there by one or two
 // protocols whose market caps ignore TVL entirely (a token locker at 19x its TVL, an
@@ -140,6 +153,33 @@ export interface PoolComparison {
   kept_wide: boolean;
 }
 
+/** The radar-9 LOO-trim test: the outlier trim and ridge tuning, kept or not. */
+export interface TrimTest {
+  /** The LOO residual threshold, in log terms: 2.5 x 1.4826 x MAD of the LOO residuals. */
+  threshold: number;
+  /** The trimmed protocols, by slug, in the order they were dropped. */
+  trimmed_slugs: string[];
+  /** The ridge lambda grid tried, and each lambda's LOO median |log error| on the trimmed pool. */
+  lambda_grid: number[];
+  lambda_loo_medians: number[];
+  /** The lambda the LOO tuning picked. */
+  lambda_star: number;
+  /** The trimmed pool's LOO median |log error| at lambda_star. */
+  trimmed_loo_median: number;
+}
+
+/** One row's uncertainty band, from the kept model's LOO residuals. */
+export interface UncertaintyBand {
+  /** The 25th percentile of the signed LOO residuals (actual minus predicted, log terms). */
+  q25: number;
+  /** The 75th percentile of the signed LOO residuals. */
+  q75: number;
+  /** exp(q25): the low bound's factor on the fitted value. */
+  low_factor: number;
+  /** exp(q75): the high bound's factor on the fitted value. */
+  high_factor: number;
+}
+
 /** The fit's held-out validation, as the dashboard's diagnostics panel states it. */
 export interface FitValidation {
   pool_size: number;
@@ -167,6 +207,10 @@ export interface FitValidation {
   five_split: FiveSplitCandidate[];
   /** Which model's coefficients the board carries: 'base' or a candidate's name. */
   kept_model: string;
+  /** The radar-9 LOO-trim test: threshold, trimmed slugs, lambda tuning. */
+  trim_test: TrimTest;
+  /** The radar-9 uncertainty band: the kept model's LOO residual quartiles. */
+  uncertainty: UncertaintyBand;
 }
 
 /** The fitted model and its validation, as shipped to the dashboard. */
@@ -240,10 +284,11 @@ export interface Integrity {
   watchlist_covered: boolean;
   watchlist_missing: string[];
   farm_steps_ok: boolean;
+  band_ok: boolean;
 }
 
 /** The model's version label: the dashboard names it. */
-export const MODEL_VERSION = 'radar-8';
+export const MODEL_VERSION = 'radar-9';
 
 /** How many live-token protocols the Live token view carries: every one with a market cap. */
 export const LIVE_ROWS = 1000;
@@ -274,6 +319,11 @@ export interface BoardRow {
   token_status: 'pre-token';
   age_days: number | null;
   implied_value_usd: number;
+  /** The uncertainty band: the 25th and 75th percentiles of the kept model's LOO
+   * residuals, as a low and a high implied value. Both are non-increasing in rank
+   * and bracket the point estimate. */
+  implied_value_low_usd: number;
+  implied_value_high_usd: number;
   launch_odds: number;
   gross_expected_value_usd: number;
   total_cost_usd: number;
@@ -304,6 +354,8 @@ export interface RadarRow {
   listed_at: string | null;
   age_days: number | null;
   implied_value_usd: number;
+  implied_value_low_usd: number;
+  implied_value_high_usd: number;
   launch_odds: number;
   gross_expected_value_usd: number;
   total_cost_usd: number;
@@ -371,6 +423,17 @@ function median(values: number[], fallback: number): number {
   const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
   return sorted.length % 2 === 1 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
+}
+
+/** A quantile of a list of numbers by linear interpolation, or `fallback` when empty. */
+function quantile(values: number[], q: number, fallback: number): number {
+  if (values.length === 0) return fallback;
+  const sorted = [...values].sort((a, b) => a - b);
+  const pos = (sorted.length - 1) * q;
+  const lo = Math.floor(pos);
+  const hi = Math.min(lo + 1, sorted.length - 1);
+  const frac = pos - lo;
+  return sorted[lo]! * (1 - frac) + sorted[hi]! * frac;
 }
 
 /** A whole day count from `from` to `to`, clamped at zero; null when either date is absent or bad. */
@@ -735,7 +798,66 @@ export function fitModel(snapshot: Snapshot): FittedModel {
   };
   const ratioTarget = (p: SnapshotProtocol): number => Math.log(p.mcap_usd! / Math.max(1, p.tvl_usd));
   const ratioPredict = (beta: number[], p: SnapshotProtocol): number => Math.log(Math.max(1, p.tvl_usd)) + dot(beta, ratioFeatures(p));
+  // Radar-9: the LOO-trimmed ridge. First, the leave-one-out residuals of the base
+  // OLS fit on the pool: each protocol predicted by a model that never saw it.
+  // The trim drops every protocol whose |residual| exceeds 2.5 x 1.4826 x MAD of
+  // those residuals — the same rule radar-6's in-sample MAD trim used, but on
+  // out-of-sample residuals, so a protocol is dropped for what the model gets
+  // wrong about it, not for how it bends its own fit. Then ridge lambda is tuned
+  // by LOO on the trimmed pool: for each lambda in the grid, every trimmed
+  // protocol is predicted by a ridge fit on the rest of the trimmed pool, and the
+  // lambda with the lowest LOO median |log error| wins (ties go to the smaller
+  // lambda). The trim set and lambda are fixed from the full pool, then the
+  // candidate is tested on the same five splits as every other candidate: the
+  // training fold drops the trimmed protocols, the held-out quintile is scored
+  // whole, so the comparison against the base is apples to apples.
+  const looResid: { slug: string; resid: number }[] = [];
+  for (let i = 0; i < pool.length; i++) {
+    const rest = pool.filter((_, j) => j !== i);
+    const b = fitOn(rest, baseFeatures);
+    looResid.push({ slug: pool[i]!.slug, resid: Math.log(pool[i]!.mcap_usd!) - dot(b, baseFeatures(pool[i]!)) });
+  }
+  const looResidMedian = median(looResid.map((r) => r.resid), 0);
+  const looMad = median(looResid.map((r) => Math.abs(r.resid - looResidMedian)), 0) || 1e-9;
+  const looTrimThreshold = 2.5 * 1.4826 * looMad;
+  const trimmedSlugs = looResid.filter((r) => Math.abs(r.resid) > looTrimThreshold).map((r) => r.slug);
+  const trimmedSet = new Set(trimmedSlugs);
+  const trimmedPool = pool.filter((p) => !trimmedSet.has(p.slug));
+  const lambdaGrid = [1, 3, 10, 30];
+  const lambdaLooMedians: number[] = [];
+  let lambdaStar = 1;
+  let lambdaStarMedian = Infinity;
+  for (const lam of lambdaGrid) {
+    const errs: number[] = [];
+    for (let i = 0; i < trimmedPool.length; i++) {
+      const rest = trimmedPool.filter((_, j) => j !== i);
+      const b = plainFit(baseFeatures, lam)(rest);
+      errs.push(Math.abs(dot(b, baseFeatures(trimmedPool[i]!)) - Math.log(trimmedPool[i]!.mcap_usd!)));
+    }
+    const m = median(errs, 0);
+    lambdaLooMedians.push(Math.round(m * 1e4) / 1e4);
+    if (m < lambdaStarMedian) {
+      lambdaStarMedian = m;
+      lambdaStar = lam;
+    }
+  }
+  const trimTest: TrimTest = {
+    threshold: Math.round(looTrimThreshold * 1e4) / 1e4,
+    trimmed_slugs: trimmedSlugs,
+    lambda_grid: lambdaGrid,
+    lambda_loo_medians: lambdaLooMedians,
+    lambda_star: lambdaStar,
+    trimmed_loo_median: Math.round(lambdaStarMedian * 1e4) / 1e4,
+  };
+  const trimRidgeSpec: ModelSpec = {
+    name: `LOO-trim ridge ${lambdaStar} (drop ${trimmedSlugs.join(', ')})`,
+    features: baseFeatures,
+    fitWith: (rows) => plainFit(baseFeatures, lambdaStar)(rows.filter((p) => !trimmedSet.has(p.slug))),
+    targetOf: logMcap,
+    predictOf: dotPredict(baseFeatures),
+  };
   const candidateSpecs: ModelSpec[] = [
+    trimRidgeSpec,
     { name: 'ridge lambda 1', features: baseFeatures, fitWith: plainFit(baseFeatures, 1), targetOf: logMcap, predictOf: dotPredict(baseFeatures) },
     { name: 'ridge lambda 3', features: baseFeatures, fitWith: plainFit(baseFeatures, 3), targetOf: logMcap, predictOf: dotPredict(baseFeatures) },
     { name: 'ridge lambda 10', features: baseFeatures, fitWith: plainFit(baseFeatures, 10), targetOf: logMcap, predictOf: dotPredict(baseFeatures) },
@@ -866,6 +988,20 @@ export function fitModel(snapshot: Snapshot): FittedModel {
       : validateSpec(keptSpec);
   const productionBeta = keptSpec.fitWith(pool);
   const keptCalibration = keptValidation === null ? calibration : keptValidation.calibration;
+  // The radar-9 uncertainty band: the kept model's LOO residuals, signed (actual
+  // minus predicted), so a positive residual is a protocol the model underpriced.
+  // The band is the middle half of those misses: the 25th and 75th percentiles,
+  // as factors on the fitted value. The median LOO residual sits near zero, so
+  // the point estimate falls inside the band; the build clamps it in anyway.
+  const keptLooResiduals = keptCalibration.map((c) => c.actual - c.predicted);
+  const bandQ25 = quantile(keptLooResiduals, 0.25, 0);
+  const bandQ75 = quantile(keptLooResiduals, 0.75, 0);
+  const uncertainty: UncertaintyBand = {
+    q25: Math.round(bandQ25 * 1e4) / 1e4,
+    q75: Math.round(bandQ75 * 1e4) / 1e4,
+    low_factor: Math.round(Math.exp(bandQ25) * 1e4) / 1e4,
+    high_factor: Math.round(Math.exp(bandQ75) * 1e4) / 1e4,
+  };
 
   // The radar-6 alternatives, fitted the same way and reported whether or not they win.
   // A term is kept only when it beats the base model on BOTH the random test and
@@ -1075,19 +1211,21 @@ export function fitModel(snapshot: Snapshot): FittedModel {
   const featureName =
     keptSpec === baseSpec
       ? 'base'
-      : keptSpec.name === 'ridge lambda 1'
-        ? 'ridge-1'
-        : keptSpec.name === 'ridge lambda 3'
-          ? 'ridge-3'
-          : keptSpec.name === 'ridge lambda 10'
-            ? 'ridge-10'
-            : keptSpec.name === 'ridge lambda 30'
-              ? 'ridge-30'
-              : keptSpec.name === 'interaction plus quadratic, ridge 3'
-                ? 'jq-ridge-3'
-                : keptSpec.name === 'per-category TVL slopes'
-                  ? 'category-slopes'
-                  : 'ratio';
+      : keptSpec === trimRidgeSpec
+        ? 'loo-ridge-trim'
+        : keptSpec.name === 'ridge lambda 1'
+          ? 'ridge-1'
+          : keptSpec.name === 'ridge lambda 3'
+            ? 'ridge-3'
+            : keptSpec.name === 'ridge lambda 10'
+              ? 'ridge-10'
+              : keptSpec.name === 'ridge lambda 30'
+                ? 'ridge-30'
+                : keptSpec.name === 'interaction plus quadratic, ridge 3'
+                  ? 'jq-ridge-3'
+                  : keptSpec.name === 'per-category TVL slopes'
+                    ? 'category-slopes'
+                    : 'ratio';
   const coefficients: FitCoefficients =
     featureName === 'ratio'
       ? {
@@ -1152,6 +1290,8 @@ export function fitModel(snapshot: Snapshot): FittedModel {
       rejected,
       five_split: fiveSplit,
       kept_model: keptModelName,
+      trim_test: trimTest,
+      uncertainty,
     },
     calibration: keptCalibration,
     features: featureName,
@@ -1690,7 +1830,14 @@ export function buildBoard(snapshot: Snapshot, fit: FittedModel, oddsModel: Logi
     const { total } = totalCostFor(p, age);
     const gross = Math.round(implied * oddsRounded);
     const expected = Math.max(0, gross - total);
-    return { p, logValue, implied, logTvl, tanhGrowth, ageYears, odds: oddsRounded, gross, total, expected, age };
+    // The uncertainty band: the kept model's LOO residual quartiles, as a low and
+    // a high implied value. Both are the same proportional factors on every row,
+    // so they stay non-increasing in rank exactly like the point estimate; the
+    // clamps only guard the rounding, never move a bound across the estimate.
+    const band = fit.validation.uncertainty;
+    const low = Math.max(1, Math.min(implied, Math.round(Math.exp(logValue + band.q25))));
+    const high = Math.max(implied, Math.round(Math.exp(logValue + band.q75)));
+    return { p, logValue, implied, low, high, logTvl, tanhGrowth, ageYears, odds: oddsRounded, gross, total, expected, age };
   });
   scored.sort((a, b) => b.implied - a.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
   return scored.map((s, i) => ({
@@ -1708,6 +1855,8 @@ export function buildBoard(snapshot: Snapshot, fit: FittedModel, oddsModel: Logi
     token_status: 'pre-token',
     age_days: s.age,
     implied_value_usd: s.implied,
+    implied_value_low_usd: s.low,
+    implied_value_high_usd: s.high,
     launch_odds: s.odds,
     gross_expected_value_usd: s.gross,
     total_cost_usd: s.total,
@@ -1794,6 +1943,8 @@ export function radarRow(row: BoardRow, watchlist: boolean): RadarRow {
     listed_at: row.listed_at,
     age_days: row.age_days,
     implied_value_usd: row.implied_value_usd,
+    implied_value_low_usd: row.implied_value_low_usd,
+    implied_value_high_usd: row.implied_value_high_usd,
     launch_odds: row.launch_odds,
     gross_expected_value_usd: row.gross_expected_value_usd,
     total_cost_usd: row.total_cost_usd,
@@ -1847,7 +1998,24 @@ export function checkBoard(board: BoardRow[], snapshot: Snapshot): Integrity {
     if (r.farm_steps.length < 3 || r.farm_steps.length > 12) farmOk = false;
     for (const s of r.farm_steps) if (s.length < 20 || s.length > 600) farmOk = false;
     if (!Number.isSafeInteger(r.implied_value_usd) || r.implied_value_usd <= 0) farmOk = false;
+    if (
+      !Number.isSafeInteger(r.implied_value_low_usd) ||
+      !Number.isSafeInteger(r.implied_value_high_usd) ||
+      r.implied_value_low_usd <= 0 ||
+      r.implied_value_low_usd > r.implied_value_usd ||
+      r.implied_value_usd > r.implied_value_high_usd
+    ) {
+      farmOk = false;
+    }
   }
+  // The band is a monotone transform of the point estimate, so its bounds are
+  // non-increasing in rank exactly like the estimate itself.
+  const bandOk = board.every(
+    (r, i) =>
+      i === 0 ||
+      (r.implied_value_low_usd <= board[i - 1]!.implied_value_low_usd &&
+        r.implied_value_high_usd <= board[i - 1]!.implied_value_high_usd),
+  );
   return {
     ranks_ok: ranksOk,
     values_non_increasing: nonIncreasing,
@@ -1855,6 +2023,7 @@ export function checkBoard(board: BoardRow[], snapshot: Snapshot): Integrity {
     watchlist_covered: missing.length === 0,
     watchlist_missing: missing,
     farm_steps_ok: farmOk,
+    band_ok: bandOk,
   };
 }
 
@@ -1917,6 +2086,19 @@ export function boardIssue(board: BoardRow[], snapshot: Snapshot): string | null
     if (steps.length < 3 || steps.length > 12) return `${r.slug} has ${steps.length} farm steps`;
     for (const s of steps) if (s.length < 20 || s.length > 600) return `${r.slug} has a farm step of ${s.length} characters`;
     if (!Number.isSafeInteger(r.implied_value_usd) || r.implied_value_usd <= 0) return `${r.slug} has implied value ${r.implied_value_usd}`;
+    if (
+      !Number.isSafeInteger(r.implied_value_low_usd) ||
+      !Number.isSafeInteger(r.implied_value_high_usd) ||
+      r.implied_value_low_usd <= 0 ||
+      r.implied_value_low_usd > r.implied_value_usd ||
+      r.implied_value_usd > r.implied_value_high_usd
+    ) {
+      return `${r.slug} has a band that does not bracket its implied value`;
+    }
+  }
+  for (let i = 1; i < board.length; i++) {
+    if (board[i]!.implied_value_low_usd > board[i - 1]!.implied_value_low_usd) return `row ${i + 1} band low rises above row ${i}`;
+    if (board[i]!.implied_value_high_usd > board[i - 1]!.implied_value_high_usd) return `row ${i + 1} band high rises above row ${i}`;
   }
   return null;
 }
