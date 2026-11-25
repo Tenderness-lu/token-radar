@@ -21,9 +21,9 @@ Term by term:
     ln(implied value) = 10.54 + 7.43 + 0.00 - 0.20 = 17.77
     implied value = e^17.77 = $52,420,239
 
-Launch odds (logistic, fitted on all 758 protocols): 21%. Gross expected value
+Launch odds (logistic, all 758 protocols): 21%. Gross EV
 $52,420,239 x 21% = $11,008,250. Farm costs $176 ($150 capital, $8 setup gas,
-$10 weekly gas over 5 weeks, $5 buffer). Net expected value $11,008,074.
+$10 weekly gas over 5 weeks, $5 buffer). Net EV $11,008,074.
 
 ## Top ten farms by expected value
 
@@ -41,11 +41,10 @@ $10 weekly gas over 5 weeks, $5 buffer). Net expected value $11,008,074.
 | 10 | b14g | $17,640,457 | 75% | $13,247,861 |
 
 The board ranks by implied value; the farm ranking above is different on
-purpose. Sentora Curator is #1 by implied value but only #21 by expected value
-($11,008,074): a 21% launch chance cuts its $52.4M to $11.0M, while Veda's 80%
-keeps most of its $38.6M. Sort the board by Farm net EV to farm by expected
-value instead of headline value.
+purpose. Sentora Curator is #1 by implied value but only #21 by expected
+value: a 21% launch chance cuts its $52.4M to $11.0M, while Veda's 80% keeps
+most of its $38.6M. Sort by Farm net EV to farm by expected value.
 
 Validation: random 80/20 median |log error| 0.95, leave-one-category-out 0.82,
-leave-one-out 0.97. Odds Brier (five-fold): extended 0.201, plain 0.202, old
-table 0.223.
+leave-one-out 0.97; odds five-fold Brier 0.201 (extended) vs 0.202 (plain) vs
+0.223 (table).

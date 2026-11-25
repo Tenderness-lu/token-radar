@@ -1,7 +1,6 @@
-// Token Radar's dashboard, radar-8. It reads window.RADAR (written beside dashboard/ by main.ts)
-// and renders the ranked board, a filterable table, a top-ten strip by farm expected value, a
-// per-protocol detail drawer with the model's own inputs and farm plan, and the live-token
-// protocols set aside below. No network: every byte it shows is in data.js.
+// Token Radar's dashboard, radar-9. It reads window.RADAR (written beside dashboard/ by main.ts)
+// and renders the ranked board, a filterable table, a top-ten strip, a per-protocol detail
+// drawer, and the live-token protocols set aside below. No network: every byte it shows is in data.js.
 // The page recomputes every row's value from the fit (logValueOf, same linear model as
 // lib/model.ts); the drawer says whether the recompute matches the board value. Farm steps are
 // generated here too, from the same inputs as lib/model.ts, and must match the model's steps
@@ -35,7 +34,7 @@
   }
 
   // The fitted value model, recomputed from the row: the same rule lib/model.ts uses,
-  // with the kept model's beta and feature shape from data.js, so page and board never drift.
+  // so page and board never drift.
   function ageYearsOf(row) {
     return (row.age_days === null || row.age_days === undefined ? fit.validation.median_age_days : row.age_days) / 365;
   }
@@ -68,7 +67,7 @@
     return Math.max(1, Math.round(Math.exp(logValueOf(row))));
   }
 
-  // A tiny element helper: h('div', {class: 'x', text: 'y'}, child, child).
+  // A tiny element helper.
   function h(tag, attrs) {
     var node = document.createElement(tag);
     if (attrs) {
@@ -91,8 +90,7 @@
     return node;
   }
 
-  // The farm plan is the same derivation main.ts writes to board.json: category, chains, TVL and
-  // age decide the opening move, the capital, the hold and every cost and time. No name is special-cased.
+  // The farm plan is the same derivation main.ts writes to board.json. No name is special-cased.
   function chainOf(p) { return p.chains && p.chains.length > 0 ? p.chains[0] : 'its main chain'; }
   function chainsText(p) {
     var chains = (p.chains || []).filter(function (c) { return c.length > 0; });
@@ -236,6 +234,7 @@
       else if (key === 'expected') { av = a.expected_value_usd; bv = b.expected_value_usd; }
       else if (key === 'gross') { av = a.gross_expected_value_usd; bv = b.gross_expected_value_usd; }
       else if (key === 'cost') { av = a.total_cost_usd; bv = b.total_cost_usd; }
+      else if (key === 'band') { av = a.implied_value_low_usd; bv = b.implied_value_low_usd; }
       else { av = a.implied_value_usd; bv = b.implied_value_usd; }
       if (av < bv) return -state.dir;
       if (av > bv) return state.dir;
@@ -265,7 +264,7 @@
           h('b', { text: 'fitted to the ' + v.pool_size + ' live-token protocols in this snapshot' }),
           ', not a made-up multiple: log market cap on log TVL, growth and age, held out and validated. The board ranks ',
           h('b', { text: String(DATA.board_size) + ' protocols' }),
-          ', gives each a launch probability from its peers and a farm plan with its cost and expected value. The strongest, ',
+          ', gives each a launch probability and a farm plan with its cost and expected value. The strongest, ',
           h('b', { text: top ? top.name : '—' }),
           ', carries an implied value of ',
           h('b', { text: top ? fmtUsd(top.implied_value_usd) : '—' }),
@@ -388,6 +387,7 @@
           h('div', { class: 'bar', 'aria-hidden': 'true' }, h('i', { style: 'width:' + Math.max(3, Math.round((r.implied_value_usd / max) * 100)) + '%' })),
           h('span', { class: 'num', text: fmtUsd(r.implied_value_usd) })
         )),
+        h('td', { class: 'num', text: fmtUsd(r.implied_value_low_usd) + '–' + fmtUsd(r.implied_value_high_usd) }),
         h('td', { class: 'num', text: Math.round(r.launch_odds * 100) + '%' }),
         h('td', { class: 'num', text: fmtUsd(r.expected_value_usd) }),
         h('td', { class: 'num', text: '$' + r.total_cost_usd }),
@@ -399,7 +399,7 @@
     return h('div', { class: 'panel' },
       h('div', { class: 'table-wrap' },
         h('table', null,
-          h('caption', { class: 'sub', text: 'Pre-token protocols, strongest implied value first. Sort by Farm net EV to rank by worth after costs; Farm cost is capital plus gas, Farm reward the gross expected value. Select a row for its model, odds and plan.' }),
+          h('caption', { class: 'sub', text: 'Pre-token protocols, strongest implied value first. Sort by Farm net EV to rank by worth after costs; Farm cost is capital plus gas, Farm reward the gross expected value. Range is the uncertainty band: the middle half of the model\u2019s leave-one-out misses. Select a row for its model, odds and plan.' }),
           h('thead', null, h('tr', null,
             sortHeader('implied', 'Rank'),
             sortHeader('name', 'Protocol'),
@@ -407,6 +407,7 @@
             sortHeader('growth', '7d'),
             sortHeader('age', 'Age'),
             sortHeader('implied', 'Implied value'),
+            sortHeader('band', 'Range'),
             sortHeader('odds', 'Launch odds'),
             sortHeader('expected', 'Farm net EV'),
             sortHeader('cost', 'Farm cost'),
@@ -433,10 +434,10 @@
     });
     return h('section', { class: 'panel model' },
       h('h2', { text: 'Already launched: ' + DATA.live.length + ' live protocols with a market cap' }),
-      h('p', { class: 'sub', text: 'These protocols already have a token, so they are not farmable and not on the board. They are listed so the reader can check the fitted model against real market caps.' }),
+      h('p', { class: 'sub', text: 'These protocols already have a token, so they are not farmable and not on the board — listed so the reader can check the fit against real market caps.' }),
       h('div', { class: 'table-wrap' },
         h('table', null,
-          h('caption', { class: 'sub', text: 'Already trading: market cap is a fact, not a model. Set aside from the pre-token ranking.' }),
+          h('caption', { class: 'sub', text: 'Already trading: market cap is a fact, not a model.' }),
           h('thead', null, h('tr', null, h('th', { scope: 'col', text: 'Protocol' }), h('th', { scope: 'col', text: 'TVL' }), h('th', { scope: 'col', text: '7d' }), h('th', { scope: 'col', text: 'Market cap' }), h('th', { scope: 'col', text: 'Mcap / TVL' }), h('th', { scope: 'col', text: 'Token' }))),
           tbody
         )
@@ -480,8 +481,7 @@
     return host;
   }
 
-  /** The fitted equation as one line. The kept model is the four-term regression (or
-   * its ridge twin, which has the same shape); a future kept shape writes its own line here. */
+  /** The fitted equation as one line. */
   function formulaText() {
     var beta = fit.beta || [c.intercept, c.log_tvl, c.tanh_growth, c.age_years];
     var f = function (n) { return (n >= 0 ? '+ ' : '- ') + Math.abs(n).toFixed(3); };
@@ -489,14 +489,14 @@
     return 'ln(implied value) = ' + beta[0].toFixed(3) + ' ' + f(beta[1]) + ' ln(TVL) ' + f(beta[2]) + ' tanh(7d growth / 30) ' + f(beta[3]) + ' age in years' + ridge;
   }
 
-  /** The model's terms for the panel table: the kept model's four terms. */
+  /** The model's terms for the panel table. */
   function modelTermRows() {
     var beta = fit.beta || [c.intercept, c.log_tvl, c.tanh_growth, c.age_years];
     return [
-      ['intercept', beta[0], 'The level: at TVL $1, flat growth, age zero, the price would be e^' + beta[0].toFixed(2) + '.'],
+      ['intercept', beta[0], 'The level at TVL $1, flat growth, age zero: e^' + beta[0].toFixed(2) + '.'],
       ['ln(TVL)', beta[1], 'Doubling TVL lifts the fitted value by about ' + Math.round((Math.pow(2, beta[1]) - 1) * 100) + '% (sub-linear).'],
-      ['tanh(7d growth / 30)', beta[2], 'A hot week carries almost no signal. Radar-4 read -1.78 here; that was the exchange tokens in its pool.'],
-      ['age in years', beta[3], 'Each extra year shaves about ' + Math.round((1 - Math.exp(beta[3])) * 100) + '% off, once TVL is in: an old tokenless protocol is discounted.']
+      ['tanh(7d growth / 30)', beta[2], 'A hot week carries almost no signal. Radar-4 read -1.78 here — the exchange tokens in its pool.'],
+      ['age in years', beta[3], 'Each extra year shaves about ' + Math.round((1 - Math.exp(beta[3])) * 100) + '% off, once TVL is in.']
     ];
   }
 
@@ -509,15 +509,23 @@
     var kept = rows.filter(function (s) { return s.kept; })[0];
     if (kept) return 'Kept: ' + kept.name + ' — ' + kept.wins + ' of 5 wins, ' + kept.rank_moves_over_10 + ' rows moved >10 ranks. The base model is retired, not hidden.';
     var best = rows.slice().sort(function (a, b) { return b.wins - a.wins || a.mean_median - b.mean_median; })[0];
-    return 'No candidate cleared both bars; the board keeps the base model. Closest: ' + best.name + ' (' + best.wins + ' of 5 wins, ' + best.rank_moves_over_10 + ' rows moved). One split can flatter a fragile term.';
+    return 'No candidate cleared both bars; the board keeps the base model. Closest: ' + best.name + ' (' + best.wins + ' of 5 wins, ' + best.rank_moves_over_10 + ' rows moved).';
+  }
+
+  /** The radar-9 LOO-trim test, in one sentence. */
+  function trimNote() {
+    var t = fit.validation.trim_test;
+    var row = (fit.validation.five_split || []).filter(function (s) { return s.name.indexOf('LOO-trim') === 0; })[0];
+    if (!t || !row) return '';
+    return 'LOO-trim: residuals over ' + t.threshold.toFixed(2) + ' dropped ' + t.trimmed_slugs.join(', ') + '; ridge lambda ' + t.lambda_star + ' (LOO ' + t.trimmed_loo_median.toFixed(2) + ') won ' + row.wins + ' of 5 splits and moved ' + row.rank_moves_over_10 + ' rows — the outliers stay in, the base model stands.';
   }
 
   /** The radar-8 fit-pool test, in one sentence. */
   function poolNote() {
     var pc = fit.validation.pool_comparison;
     if (!pc) return '';
-    if (pc.kept_wide) return 'Fit pool: ' + pc.pool_dated_size + ' dated, plus ' + pc.pool_imputed_age + ' age-imputed — the wide pool won ' + pc.wins + ' of 5 splits and moved ' + pc.rank_moves_over_10 + ' rows, clearing both bars, so the board carries the ' + pc.pool_wide_size + '-protocol fit.';
-    return 'Fit pool: ' + pc.pool_dated_size + ' dated protocols. The wide pool (' + pc.pool_wide_size + ', ' + pc.pool_imputed_age + ' age-imputed) won ' + pc.wins + ' of 5 splits and moved ' + pc.rank_moves_over_10 + ' rows >10 ranks, so the board keeps the ' + pc.pool_dated_size + '.';
+    if (pc.kept_wide) return 'Fit pool: ' + pc.pool_dated_size + ' dated plus ' + pc.pool_imputed_age + ' age-imputed — the wide pool won ' + pc.wins + ' of 5 and moved ' + pc.rank_moves_over_10 + ' rows, clearing both bars, so the board carries the ' + pc.pool_wide_size + ' fit.';
+    return 'Fit pool: ' + pc.pool_dated_size + ' dated. The wide pool (' + pc.pool_wide_size + ', ' + pc.pool_imputed_age + ' age-imputed) won ' + pc.wins + ' of 5 and moved ' + pc.rank_moves_over_10 + ' rows >10 ranks, so the board keeps the ' + pc.pool_dated_size + '.';
   }
 
   function modelPanel() {
@@ -525,10 +533,10 @@
     var odds = DATA.odds;
     var ov = odds.validation;
     var oddsTerms = [
-      ['intercept', odds.coefficients[0], 'The level: age zero, TVL $1, flat growth, reference category ' + odds.reference_category + '.'],
+      ['intercept', odds.coefficients[0], 'The level at age zero, TVL $1, flat growth, reference category ' + odds.reference_category + '.'],
       ['age in years', odds.coefficients[1], 'Older protocols launch more often.'],
       ['ln(TVL)', odds.coefficients[2], 'Size barely moves the odds once age is in.'],
-      ['tanh(7d growth / 30)', odds.coefficients[3], 'A hot week argues against a launch, age and size held fixed.']
+      ['tanh(7d growth / 30)', odds.coefficients[3], 'A hot week argues against a launch.']
     ];
     odds.categories.forEach(function (cat, i) {
       oddsTerms.push([cat + ' (vs ' + odds.reference_category + ')', odds.coefficients[4 + i], 'Shift in log-odds vs ' + odds.reference_category + '.']);
@@ -537,7 +545,7 @@
       var nCat = odds.categories.length;
       oddsTerms.push(['log1p(chain count)', odds.coefficients[4 + nCat], 'More chains, higher odds.']);
       odds.categories.forEach(function (cat, i) {
-        oddsTerms.push([cat + ' x age (vs ' + odds.reference_category + ')', odds.coefficients[5 + nCat + i], 'How fast this category\u2019s launch rate rises with age vs ' + odds.reference_category + '.']);
+        oddsTerms.push([cat + ' x age (vs ' + odds.reference_category + ')', odds.coefficients[5 + nCat + i], 'How this category\u2019s launch rate rises with age vs ' + odds.reference_category + '.']);
       });
     }
     var termRows = modelTermRows();
@@ -548,7 +556,7 @@
     ];
     return h('section', { class: 'panel model', id: 'model-panel' },
       h('h2', { text: 'How the implied value is fitted — and how it is checked' }),
-      h('p', { class: 'sub', text: 'One linear regression, fitted at runtime on the ' + v.pool_size + ' live-token protocols with a market cap, a TVL, a 7-day change and a listing date' + (v.pool_imputed_age ? ', plus ' + v.pool_imputed_age + ' more tested with age imputed at the pool median and not kept (see below)' : '') + '. Exchanges are set aside (' + v.pool_excluded_cex + '): an exchange token prices the exchange, not its TVL. The target is log market cap; the board uses the same fit for every row.' }),
+      h('p', { class: 'sub', text: 'One linear regression, fitted at runtime on the ' + v.pool_size + ' live-token protocols with a market cap, a TVL, a 7-day change and a listing date. Exchanges are set aside (' + v.pool_excluded_cex + '): an exchange token prices the exchange, not its TVL. The target is log market cap; the board uses the same fit for every row.' }),
       h('div', { class: 'formula' },
         h('div', null, h('b', { text: formulaText() }))
       ),
@@ -575,12 +583,12 @@
               );
             }))
           ),
-          h('p', { class: 'note', text: 'Train R² ' + v.train_r2.toFixed(2) + '. Held-out R² is near or below zero: one or two protocols carry market caps that ignore TVL (a locker at 19x, an allocator at 0.6%); squares let those two dominate, so the median is the robust read. ' + (fit.features === 'base' ? 'Unchanged from radar-5: same four terms, same pool, same medians (0.95 / 0.82 / 0.97). Radar-6 tried fourteen alternatives and kept none; radar-7 re-tested the close calls on five splits and kept none; radar-8 tested a wider fit pool and kept the 87 — see below.' : 'The kept model is ' + v.kept_model + ': it cleared the five-split search below, so these medians are its own.') })
+          h('p', { class: 'note', text: 'Train R² ' + v.train_r2.toFixed(2) + '. Held-out R² is near or below zero: one or two protocols carry market caps that ignore TVL (a locker at 19x, an allocator at 0.6%), so the median is the robust read. ' + (fit.features === 'base' ? 'Unchanged from radar-5: same four terms, same pool, same medians (0.95 / 0.82 / 0.97). Radar-6 tried fourteen alternatives, radar-7 re-tested the close calls on five splits, radar-8 tested a wider pool, radar-9 trimmed the LOO outliers — all kept none; see below.' : 'The kept model is ' + v.kept_model + ': it cleared the five-split search below, so these medians are its own.') })
         )
       ),
       h('div', null,
         h('h3', { text: 'Five-split stability search: would a richer model survive five splits?' }),
-        h('p', { class: 'sub', text: 'Each candidate is fitted on four hash quintiles and tested on the fifth, five times over. It replaces the base only on four of five split wins AND fewer than 20 of 203 rows moved by more than ten ranks. Base split medians: ' + (v.five_split && v.five_split.length ? v.five_split[0].base_medians.map(function (m) { return m.toFixed(2); }).join(' / ') : '—') + '.' }),
+        h('p', { class: 'sub', text: 'Each candidate is fitted on four hash quintiles and tested on the fifth, five times over. It replaces the base only on four of five split wins AND fewer than 20 of 203 rows moved by more than ten ranks. Base medians: ' + (v.five_split && v.five_split.length ? v.five_split[0].base_medians.map(function (m) { return m.toFixed(2); }).join(' / ') : '—') + '.' }),
         h('table', { class: 'diag-table' },
           h('thead', null, h('tr', null, h('th', { scope: 'col', text: 'Candidate' }), h('th', { scope: 'col', text: 'Split medians' }), h('th', { scope: 'col', text: 'Wins' }), h('th', { scope: 'col', text: 'Rows moved' }), h('th', { scope: 'col', text: 'Kept?' }))),
           h('tbody', null, (v.five_split || []).map(function (s) {
@@ -594,12 +602,13 @@
           }))
         ),
         h('p', { class: 'note', text: fiveSplitNote() }),
+        h('p', { class: 'note', text: trimNote() }),
         h('p', { class: 'note', text: poolNote() })
       ),
       h('div', null,
         h('h3', { text: 'Calibration: leave-one-out predictions vs actual market caps' }),
         calibrationChart(),
-        h('p', { class: 'note', text: 'Each dot is one of the ' + v.pool_size + ' fitted protocols, predicted by a model that never saw it. The dashed line is perfect calibration; dots off it are market caps the snapshot cannot explain. Red dots miss by more than 1.5 in log terms (about 4.5x).' })
+        h('p', { class: 'note', text: 'Each dot is one of the ' + v.pool_size + ' fitted protocols, predicted by a model that never saw it. The dashed line is perfect calibration; red dots miss by more than 1.5 in log terms (about 4.5x).' })
       ),
       h('div', null,
         h('h3', { text: 'Terms that were fitted and dropped' }),
@@ -609,7 +618,7 @@
       ),
       h('div', null,
         h('h3', { text: 'Launch odds: a logistic model, not a table' }),
-        h('p', { class: 'sub', text: 'Radar-5 read odds off an age-by-TVL table. Radar-6 fits one logistic regression on launch over all 758 protocols, with age, log TVL, 7-day growth and category. Radar-7 adds chain count and a category-by-age interaction, kept only when the five-fold Brier improves: ' + (odds.features === 'extended' ? 'it does, ' + ov.five_fold_extended_logistic_brier.toFixed(3) + ' against the plain logistic\u2019s ' + ov.five_fold_logistic_brier.toFixed(3) + ', so the board carries the extended odds.' : 'it does not (' + ov.five_fold_extended_logistic_brier.toFixed(3) + ' against the plain logistic\u2019s ' + ov.five_fold_logistic_brier.toFixed(3) + '), so the board keeps the plain logistic odds.') }),
+        h('p', { class: 'sub', text: 'Radar-5 read odds off an age-by-TVL table; radar-6 fits one logistic regression on launch over all 758 protocols (age, log TVL, 7-day growth, category); radar-7 adds chain count and a category-by-age interaction, kept only when the five-fold Brier improves: ' + (odds.features === 'extended' ? 'it does, ' + ov.five_fold_extended_logistic_brier.toFixed(3) + ' against the plain logistic\u2019s ' + ov.five_fold_logistic_brier.toFixed(3) + ', so the board carries the extended odds.' : 'it does not (' + ov.five_fold_extended_logistic_brier.toFixed(3) + ' against the plain logistic\u2019s ' + ov.five_fold_logistic_brier.toFixed(3) + '), so the board keeps the plain logistic odds.') }),
         h('table', { class: 'diag-table' },
           h('thead', null, h('tr', null, h('th', { scope: 'col', text: 'Term' }), h('th', { scope: 'col', text: 'Coefficient' }), h('th', { scope: 'col', text: 'What it says' }))),
           h('tbody', null, oddsTerms.map(function (r) {
@@ -624,9 +633,9 @@
             h('tr', null, h('td', null, h('b', { text: 'Old table' })), h('td', { class: 'num', text: ov.table_brier.toFixed(3) }), h('td', { class: 'num', text: ov.five_fold_table_brier.toFixed(3) }), h('td', { class: 'num', text: ov.table_logloss.toFixed(3) }))
           )
         ),
-        h('p', { class: 'note', text: 'Lower Brier is better. The board carries the ' + (odds.features === 'extended' ? 'extended' : 'plain') + ' logistic (five-fold Brier ' + (odds.features === 'extended' ? ov.five_fold_extended_logistic_brier.toFixed(3) : ov.five_fold_logistic_brier.toFixed(3)) + ', old table ' + ov.five_fold_table_brier.toFixed(3) + ', global rate ' + ov.global_brier.toFixed(3) + ' fixed). No listing date takes the pool median age (' + Math.round(odds.median_age_days) + ' days), the same imputation as the fit.' })
+        h('p', { class: 'note', text: 'Lower Brier is better. The board carries the ' + (odds.features === 'extended' ? 'extended' : 'plain') + ' logistic (five-fold Brier ' + (odds.features === 'extended' ? ov.five_fold_extended_logistic_brier.toFixed(3) : ov.five_fold_logistic_brier.toFixed(3)) + ', old table ' + ov.five_fold_table_brier.toFixed(3) + ', global rate ' + ov.global_brier.toFixed(3) + ' fixed). No listing date takes the pool median age (' + Math.round(odds.median_age_days) + ' days), as in the fit.' })
       ),
-      h('p', { class: 'sub', text: 'The model is rough — the median held-out miss is about a factor of ' + Math.exp(v.test_median_abs_log_error).toFixed(1) + 'x — so treat each implied value as an order of magnitude, not a price.' })
+      h('p', { class: 'sub', text: 'The model is rough — the median held-out miss is about 2.6x — so treat each implied value as an order of magnitude, not a price.' })
     );
   }
 
@@ -663,7 +672,7 @@
         h('div', null, h('span', { text: 'total farm costs' }), h('b', { class: 'num', text: '$' + row.total_cost_usd })),
         h('div', { class: 'net-ev' }, h('span', { text: 'net expected value, after all costs' }), h('b', { class: 'num', text: fmtUsd(row.expected_value_usd) }))
       ),
-      h('p', { class: 'note', text: 'Model ' + fit.version + ': the same fit scores every protocol. The page recomputes this row as ' + fmtUsd(recomputed) + (recomputed === row.implied_value_usd ? ', the same number board.json carries.' : ', which differs from the board: the data would be stale.') + ' Odds are logistic on all 758 protocols.' })
+      h('p', { class: 'note', text: 'Model ' + fit.version + ': the same fit scores every protocol; the page recomputes this row as ' + fmtUsd(recomputed) + (recomputed === row.implied_value_usd ? ', the same number board.json carries.' : ', which differs from the board.') + ' Odds are logistic on all 758 protocols.' })
     ));
     dialog.appendChild(h('section', { class: 'detail-section' },
       h('h3', { text: 'Farm plan' }),

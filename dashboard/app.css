@@ -1,4 +1,4 @@
-/* Token Radar, radar-4 theme: one dark palette, one accent, two radii. */
+/* Token Radar theme: one dark palette, one accent, two radii. */
 :root {
   --canvas: #0b1015;
   --surface: #121a22;
@@ -98,9 +98,6 @@ a { color: var(--accent); }
 }
 .field input { min-width: 280px; }
 .field input:focus, .field select:focus { border-color: var(--accent); outline: none; }
-.tabs { display: flex; gap: var(--s1); padding: 3px; border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--surface); }
-.tabs button { min-height: 30px; padding: 0 var(--s3); border: 0; border-radius: 6px; background: transparent; color: var(--muted); }
-.tabs button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
 .chip {
   min-height: 38px; padding: 0 var(--s3); border: 1px solid var(--border); border-radius: var(--radius-control);
   background: var(--surface); color: var(--muted); white-space: nowrap;
@@ -148,7 +145,6 @@ tbody tr[data-selected="true"] { background: color-mix(in srgb, var(--accent) 10
 .net-ev { background: color-mix(in srgb, var(--accent) 12%, var(--surface)); border: 1px solid var(--accent); border-radius: var(--radius-control); padding: var(--s2) var(--s3); margin: 0 calc(-1 * var(--s3)); }
 .net-ev b { color: var(--accent); }
 .empty { padding: var(--s7) var(--s5); text-align: center; display: grid; gap: var(--s3); justify-items: center; }
-.empty p { color: var(--muted); }
 .button { min-height: 38px; padding: 0 var(--s4); border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--surface-2); }
 .button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
 
@@ -157,7 +153,6 @@ tbody tr[data-selected="true"] { background: color-mix(in srgb, var(--accent) 10
   background: var(--surface); border-left: 1px solid var(--border); padding: var(--s5);
   overflow-y: auto; color: var(--ink);
 }
-.detail[hidden] { display: none; }
 .detail::backdrop { background: rgba(4, 8, 12, 0.6); }
 .detail-head { display: flex; align-items: start; justify-content: space-between; gap: var(--s4); }
 .detail-head > div { min-width: 0; }
@@ -187,7 +182,4 @@ tbody tr[data-selected="true"] { background: color-mix(in srgb, var(--accent) 10
   .kpi { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .facts { border-left: 0; border-top: 1px solid var(--border); padding-left: 0; padding-top: var(--s4); }
   .field input { min-width: 0; width: 100%; }
-}
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; }
 }
