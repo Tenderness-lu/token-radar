@@ -42,6 +42,20 @@
 // age interaction — and keep them only when the five-fold Brier score improves on the
 // radar-6 logistic's 0.202.
 //
+// What radar-8 changes. First, the fit pool: the fit has always used only the dated
+// live-token protocols (87). Thirty-two more live non-CEX protocols carry a market
+// cap but no listing date, so their age is imputed at the pool median (990 days) and
+// they are excluded from the fit. Radar-8 tests fitting on all 119 against the
+// 87-only fit, on the same five-split protocol: the same held-out quintile (dated
+// protocols only, so the test set is identical for both pools) plus the board rank
+// moves. The wide pool is kept only when it wins at least four of five splits AND
+// moves fewer than twenty board rows by more than ten ranks; otherwise the 87-pool
+// fit stays and the comparison is reported honestly in the panel. Second, the
+// dossier text was nearly full (64,195 of 65,536 bytes), so radar-8 trims the
+// panel prose and the rejected-terms notes, then adds two short sections: the
+// model's limits and how to use the radar. Third, the dashboard gains a top-ten
+// strip by expected value and farm cost and reward columns on the board table.
+
 // The fit reports its own held-out numbers, and the board uses the same fit for every
 // row. Held-out R-squared is below zero on both schemes, dragged there by one or two
 // protocols whose market caps ignore TVL entirely (a token locker at 19x its TVL, an
@@ -113,10 +127,27 @@ export interface FiveSplitCandidate {
   kept: boolean;
 }
 
+/** The fit-pool comparison (radar-8): the dated-only pool against the wide pool that
+ * also takes the live protocols with no listing date, age imputed at the median. */
+export interface PoolComparison {
+  pool_dated_size: number;
+  pool_wide_size: number;
+  pool_imputed_age: number;
+  pool_dated_medians: number[];
+  pool_wide_medians: number[];
+  wins: number;
+  rank_moves_over_10: number;
+  kept_wide: boolean;
+}
+
 /** The fit's held-out validation, as the dashboard's diagnostics panel states it. */
 export interface FitValidation {
   pool_size: number;
   pool_excluded_cex: number;
+  /** Live protocols in the kept pool whose listing date is missing, age imputed. */
+  pool_imputed_age: number;
+  /** The radar-8 fit-pool comparison: dated-only vs wide pool, five splits. */
+  pool_comparison: PoolComparison;
   train_size: number;
   test_size: number;
   train_r2: number;
@@ -212,7 +243,7 @@ export interface Integrity {
 }
 
 /** The model's version label: the dashboard names it. */
-export const MODEL_VERSION = 'radar-7';
+export const MODEL_VERSION = 'radar-8';
 
 /** How many live-token protocols the Live token view carries: every one with a market cap. */
 export const LIVE_ROWS = 1000;
@@ -501,15 +532,76 @@ export function fitModel(snapshot: Snapshot): FittedModel {
   const excludedCex = snapshot.protocols.filter(
     (p) => p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0 && p.change_7d !== null && p.listed_at !== null && ageDays(snapshot.as_of, p.listed_at) !== null && (p.category ?? 'Other') === 'CEX',
   ).length;
-  const pool = snapshot.protocols.filter(
+  const poolDated = snapshot.protocols.filter(
     (p) =>
       p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0 && p.change_7d !== null && p.listed_at !== null && ageDays(snapshot.as_of, p.listed_at) !== null && (p.category ?? 'Other') !== 'CEX',
   );
-  const medianAgeDays = median(pool.map((p) => ageDays(snapshot.as_of, p.listed_at) ?? 0), 180);
+  const medianAgeDays = median(poolDated.map((p) => ageDays(snapshot.as_of, p.listed_at) ?? 0), 180);
   const sectors = sectorMultiples(snapshot);
+  const baseFeatures = (p: SnapshotProtocol): number[] => featuresFor(p, medianAgeDays, snapshot.as_of);
+  const fitOn = (rows: SnapshotProtocol[], features: (p: SnapshotProtocol) => number[]): number[] =>
+    ols(
+      rows.map(features),
+      rows.map((p) => Math.log(p.mcap_usd!)),
+    );
+  // The radar-8 fit-pool test: the wide pool also takes the live non-CEX protocols
+  // with no listing date (their age is imputed at the pool median by featuresFor).
+  // Each split is scored on the dated pool's quintile, identical for both pools, so
+  // the only difference is whether the imputed-age protocols were in the training
+  // data. The wide pool is kept only on four of five split wins AND fewer than
+  // twenty board rows moved by more than ten ranks.
+  const poolWide = snapshot.protocols.filter(
+    (p) =>
+      p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0 && p.change_7d !== null && (p.category ?? 'Other') !== 'CEX',
+  );
+  const poolDatedMedians: number[] = [];
+  const poolWideMedians: number[] = [];
+  for (let q = 0; q < 5; q++) {
+    const held = poolDated.filter((p) => hashQuintile(p.slug) === q);
+    const betaDated = fitOn(
+      poolDated.filter((p) => hashQuintile(p.slug) !== q),
+      baseFeatures,
+    );
+    const betaWide = fitOn(
+      poolWide.filter((p) => hashQuintile(p.slug) !== q),
+      baseFeatures,
+    );
+    poolDatedMedians.push(median(held.map((p) => Math.abs(dot(betaDated, baseFeatures(p)) - Math.log(p.mcap_usd!))), 0));
+    poolWideMedians.push(median(held.map((p) => Math.abs(dot(betaWide, baseFeatures(p)) - Math.log(p.mcap_usd!))), 0));
+  }
+  const poolWins = poolWideMedians.filter((m, q) => m < poolDatedMedians[q]!).length;
+  const poolRankSet = new Map<string, SnapshotProtocol>();
+  for (const slug of snapshot.watchlist) {
+    const p = snapshot.protocols.find((q) => q.slug === slug);
+    if (p !== undefined) poolRankSet.set(slug, p);
+  }
+  for (const p of snapshot.protocols) if (!poolRankSet.has(p.slug) && isRankable(p)) poolRankSet.set(p.slug, p);
+  const orderByBeta = (beta: number[]): Map<string, number> => {
+    const slugs = [...poolRankSet.keys()].sort((a, b) => {
+      const va = Math.max(1, Math.round(Math.exp(dot(beta, baseFeatures(poolRankSet.get(a)!)))));
+      const vb = Math.max(1, Math.round(Math.exp(dot(beta, baseFeatures(poolRankSet.get(b)!)))));
+      return vb - va || (a < b ? -1 : a > b ? 1 : 0);
+    });
+    return new Map(slugs.map((s, i) => [s, i + 1]));
+  };
+  const rankDated = orderByBeta(fitOn(poolDated, baseFeatures));
+  const rankWide = orderByBeta(fitOn(poolWide, baseFeatures));
+  let poolRankMoves = 0;
+  for (const slug of poolRankSet.keys()) if (Math.abs(rankWide.get(slug)! - rankDated.get(slug)!) > 10) poolRankMoves++;
+  const keepWidePool = poolWins >= 4 && poolRankMoves < 20;
+  const pool = keepWidePool ? poolWide : poolDated;
+  const poolComparison: PoolComparison = {
+    pool_dated_size: poolDated.length,
+    pool_wide_size: poolWide.length,
+    pool_imputed_age: poolWide.length - poolDated.length,
+    pool_dated_medians: poolDatedMedians.map((v) => Math.round(v * 1e4) / 1e4),
+    pool_wide_medians: poolWideMedians.map((v) => Math.round(v * 1e4) / 1e4),
+    wins: poolWins,
+    rank_moves_over_10: poolRankMoves,
+    kept_wide: keepWidePool,
+  };
   const train = pool.filter((p) => !isTestSet(p.slug));
   const test = pool.filter((p) => isTestSet(p.slug));
-  const baseFeatures = (p: SnapshotProtocol): number[] => featuresFor(p, medianAgeDays, snapshot.as_of);
   const sectorFeatures = (p: SnapshotProtocol): number[] => [...baseFeatures(p), Math.log(sectorMultipleFor(sectors, p.category))];
   const chainFeatures = (p: SnapshotProtocol): number[] => [...baseFeatures(p), Math.log1p(p.chains.length)];
   const logGrowthFeatures = (p: SnapshotProtocol): number[] => {
@@ -518,11 +610,6 @@ export function fitModel(snapshot: Snapshot): FittedModel {
     return [1, Math.log(Math.max(1, p.tvl_usd)), signed, ageDaysForFit(p, medianAgeDays, snapshot.as_of) / 365];
   };
 
-  const fitOn = (rows: SnapshotProtocol[], features: (p: SnapshotProtocol) => number[]): number[] =>
-    ols(
-      rows.map(features),
-      rows.map((p) => Math.log(p.mcap_usd!)),
-    );
   const predict = (beta: number[], rows: SnapshotProtocol[], features: (p: SnapshotProtocol) => number[]): number[] =>
     rows.map((p) => dot(beta, features(p)));
   const absErrors = (beta: number[], rows: SnapshotProtocol[], features: (p: SnapshotProtocol) => number[]): number[] =>
@@ -895,54 +982,54 @@ export function fitModel(snapshot: Snapshot): FittedModel {
   testAlternative(
     'sector multiple (log of the category mcap/TVL ratio)',
     sectorFeatures,
-    'a category adjustment was already tested by radar-4 and dropped; on the cleaned pool it still loses on both held-out checks, so the board carries no sector term',
+    'tested by radar-4 and dropped; still loses both held-out checks',
   );
   testAlternative(
     'chain count (log1p of the number of chains)',
     chainFeatures,
-    'multichain breadth adds almost nothing once TVL is in, and its leave-one-out error is worse than the base model',
+    'adds almost nothing once TVL is in; leave-one-out is worse',
   );
   testAlternative(
     'signed-log growth (log1p of the 7-day change, sign kept)',
     logGrowthFeatures,
-    'a gentler growth transform than tanh: it loses both held-out checks on the cleaned pool, so the board keeps tanh',
+    'loses both held-out checks; the board keeps tanh',
   );
   testAlternative(
     'quadratic log TVL ((ln TVL - mean)^2)',
     quadFeatures,
-    'curvature is near zero (coefficient about -0.02): it shaves the random test a touch but loses leave-one-out, so the board keeps the straight line',
+    'curvature near zero (about -0.02); loses leave-one-out',
   );
   testAlternative(
     'log TVL by age interaction ((ln TVL - mean) x age in years)',
     interFeatures,
-    'the TVL slope steepens with age, and it wins leave-one-category-out and leave-one-out, but it loses the fixed 80/20 test, so the board keeps the simpler model',
+    'wins leave-one-category-out and leave-one-out, loses the fixed 80/20 test',
   );
   testAlternative(
     'interaction plus quadratic',
     jqFeatures,
-    'the closest call of radar-6: it wins all three fixed medians by a hair, but it loses two of the five alternate hash splits, moves 88 of the 203 board rows by more than ten ranks, and pushes the growth coefficient from 0.008 to 0.142 — radar-7 re-tests it with ridge shrinkage in the five-split table above before it may replace the base model',
+    'closest call of radar-6: wins all three fixed medians by a hair, loses two of five splits, moves 88 rows, growth coefficient 0.008 to 0.142',
   );
   testAlternative(
     'tanh(7d growth / 60)',
     tanh60Features,
-    'a gentler growth transform wins the random test by a hair and loses leave-one-out; the growth term is noise either way',
+    'wins the random test by a hair, loses leave-one-out; growth is noise either way',
   );
   testAlternative(
     'raw growth (7-day change / 100)',
     rawGrowthFeatures,
-    'the raw change wins the random test by a hair and loses leave-one-out, the same story as tanh/60',
+    'same story as tanh/60',
   );
   testAlternative(
     'log age (log1p of age in years)',
     logAgeFeatures,
-    'log age loses on every check; age stays linear in years',
+    'loses on every check; age stays linear in years',
   );
   testAlternative(
     'ridge shrinkage (lambda 3)',
     baseFeatures,
     keptModelName === 'ridge lambda 3'
-      ? 'shrinking the coefficients helps leave-one-out a touch; on the five-split search it clears both bars, so radar-7 keeps the ridge-3 fit'
-      : 'shrinking the coefficients helps leave-one-out a touch and hurts the random test; the five-split search re-tests it at lambda 1, 3, 10 and 30 before any of them may replace the plain fit',
+      ? 'helps leave-one-out a touch; on five splits it clears both bars, so radar-7 keeps the ridge-3 fit'
+      : 'helps leave-one-out a touch, hurts the random test; five splits re-test it at lambda 1, 3, 10 and 30',
     fitRidge,
   );
   // The five protocols the MAD trim drops, named so the panel can say what it tried.
@@ -959,25 +1046,25 @@ export function fitModel(snapshot: Snapshot): FittedModel {
   testAlternative(
     'MAD-trimmed fit (drop |residual| over 2.5 MAD)',
     baseFeatures,
-    `dropping ${trimmedNames} makes every held-out check worse, so the outliers stay in the pool and are named here instead of hidden`,
+    `dropping ${trimmedNames} makes every held-out check worse; the outliers stay in and are named here`,
     fitTrimmed,
   );
   testAlternative(
     'winsorised target (clip residuals to 2.5 MAD)',
     baseFeatures,
-    'clipping the wildest market caps to 2.5 MAD helps nothing held-out; the board fits the caps as they are',
+    'helps nothing held-out; the board fits the caps as they are',
     fitWinsorized,
   );
   testAlternative(
     'weighted least squares (weight sqrt(TVL))',
     baseFeatures,
-    'weighting big protocols more loses on every check; every protocol counts once',
+    'loses on every check; every protocol counts once',
     fitWls,
   );
   testAlternative(
     'least absolute deviations (median regression)',
     baseFeatures,
-    'fitting the median instead of the mean loses on every check, including the median error it targets',
+    'loses on every check, including the median error it targets',
     fitLad,
   );
 
@@ -1046,6 +1133,8 @@ export function fitModel(snapshot: Snapshot): FittedModel {
     validation: {
       pool_size: pool.length,
       pool_excluded_cex: excludedCex,
+      pool_imputed_age: keepWidePool ? poolWide.length - poolDated.length : 0,
+      pool_comparison: poolComparison,
       train_size: train.length,
       test_size: test.length,
       train_r2: val.train_r2,
