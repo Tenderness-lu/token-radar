@@ -1,15 +1,10 @@
-// Token Radar's dashboard, radar-6. It reads window.RADAR (written beside dashboard/ by main.ts)
-// and renders the ranked board, a filterable table, a per-protocol detail drawer with the model's
-// own inputs and the protocol's farm plan, and the live-token protocols set aside below.
-// No network: every byte it shows is in data.js.
-//
-// The page recomputes every row's value from the fit: logValueOf below is the same linear model as
-// lib/model.ts, with the coefficients data.js carries. The detail drawer says whether the recompute
-// matches the board value, so a reader can see the model rather than take it on trust.
-//
-// The farm steps are generated here too, from the same inputs as lib/model.ts: chain count, capital
-// band, hold days and the row's launch odds and expected value. They are not copied from the board
-// file, so the plan logic stays visible in the source, and the text must match the model's steps
+// Token Radar's dashboard, radar-8. It reads window.RADAR (written beside dashboard/ by main.ts)
+// and renders the ranked board, a filterable table, a top-ten strip by farm expected value, a
+// per-protocol detail drawer with the model's own inputs and farm plan, and the live-token
+// protocols set aside below. No network: every byte it shows is in data.js.
+// The page recomputes every row's value from the fit (logValueOf, same linear model as
+// lib/model.ts); the drawer says whether the recompute matches the board value. Farm steps are
+// generated here too, from the same inputs as lib/model.ts, and must match the model's steps
 // character for character (the build's tests compare them).
 (function () {
   'use strict';
@@ -40,11 +35,7 @@
   }
 
   // The fitted value model, recomputed from the row: the same rule lib/model.ts uses,
-  // with the kept model's beta and feature shape from data.js, so the page and the
-  // board can never drift apart. Base and ridge models are the four terms
-  // (intercept, log TVL, tanh growth, age); the ratio model prices log(mcap/TVL) and
-  // adds log TVL back; the interaction model adds (ln TVL - mean) x age and its
-  // square; the category-slope model lets each category carry its own TVL slope.
+  // with the kept model's beta and feature shape from data.js, so page and board never drift.
   function ageYearsOf(row) {
     return (row.age_days === null || row.age_days === undefined ? fit.validation.median_age_days : row.age_days) / 365;
   }
@@ -62,9 +53,7 @@
     for (var i = 0; i < terms.length; i++) sum += terms[i][1];
     return sum;
   }
-  /** The value's term-by-term breakdown for the detail drawer. The kept model is the
-   * four-term regression (base, or its ridge twin, which has the same shape), so the
-   * terms are its four coefficients; a future kept shape adds its terms here. */
+  /** The value's term-by-term breakdown for the detail drawer: the kept model's four terms. */
   function valueTermsOf(row) {
     var beta = fit.beta || [c.intercept, c.log_tvl, c.tanh_growth, c.age_years];
     var inp = modelInputsOf(row);
@@ -102,9 +91,8 @@
     return node;
   }
 
-  // The farm plan is the same derivation main.ts writes to board.json: category, chains, TVL and age
-  // decide the opening move, the capital, the hold and every cost and time, and step six states
-  // the rough expected value from the row's implied value and launch odds. No name is special-cased.
+  // The farm plan is the same derivation main.ts writes to board.json: category, chains, TVL and
+  // age decide the opening move, the capital, the hold and every cost and time. No name is special-cased.
   function chainOf(p) { return p.chains && p.chains.length > 0 ? p.chains[0] : 'its main chain'; }
   function chainsText(p) {
     var chains = (p.chains || []).filter(function (c) { return c.length > 0; });
@@ -246,6 +234,8 @@
       else if (key === 'age') { av = a.age_days === null ? Infinity : a.age_days; bv = b.age_days === null ? Infinity : b.age_days; }
       else if (key === 'odds') { av = a.launch_odds; bv = b.launch_odds; }
       else if (key === 'expected') { av = a.expected_value_usd; bv = b.expected_value_usd; }
+      else if (key === 'gross') { av = a.gross_expected_value_usd; bv = b.gross_expected_value_usd; }
+      else if (key === 'cost') { av = a.total_cost_usd; bv = b.total_cost_usd; }
       else { av = a.implied_value_usd; bv = b.implied_value_usd; }
       if (av < bv) return -state.dir;
       if (av > bv) return state.dir;
@@ -273,9 +263,9 @@
         h('p', null,
           'Every protocol without a token is scored by a value model ',
           h('b', { text: 'fitted to the ' + v.pool_size + ' live-token protocols in this snapshot' }),
-          ', not by a made-up multiple: log market cap on log TVL, 7-day growth and age, with held-out validation. The board ranks ',
+          ', not a made-up multiple: log market cap on log TVL, growth and age, held out and validated. The board ranks ',
           h('b', { text: String(DATA.board_size) + ' protocols' }),
-          ', gives each one a launch probability from its peers, and a farm plan that states its cost and its expected value. The strongest, ',
+          ', gives each a launch probability from its peers and a farm plan with its cost and expected value. The strongest, ',
           h('b', { text: top ? top.name : '—' }),
           ', carries an implied value of ',
           h('b', { text: top ? fmtUsd(top.implied_value_usd) : '—' }),
@@ -286,8 +276,6 @@
         h('div', { class: 'fact' }, h('span', { text: 'Watchlist covered' }), h('b', { text: DATA.audit.watchlist_covered + ' / ' + DATA.audit.watchlist_size })),
         h('div', { class: 'fact' }, h('span', { text: 'Pre-token rows scored' }), h('b', { text: String(DATA.board_size) })),
         h('div', { class: 'fact' }, h('span', { text: 'Fitted model, test error' }), h('b', { text: 'median |log error| ' + v.test_median_abs_log_error.toFixed(2) })),
-        h('div', { class: 'fact' }, h('span', { text: 'Leave-one-category-out error' }), h('b', { text: 'median |log error| ' + v.loco_median_abs_log_error.toFixed(2) })),
-        h('div', { class: 'fact' }, h('span', { text: 'Leave-one-out error' }), h('b', { text: 'median |log error| ' + v.loo_median_abs_log_error.toFixed(2) })),
         h('div', { class: 'fact' }, h('span', { text: 'Median launch odds' }), h('b', { text: Math.round(DATA.median_launch_odds * 100) + '%' })),
         h('div', { class: 'fact' }, h('span', { text: 'Live-token protocols set aside' }), h('b', { text: String(DATA.live_size) }))
       )
@@ -300,9 +288,8 @@
     return h('section', { class: 'kpi', 'aria-label': 'Board at a glance' },
       h('div', { class: 'kpi-item' }, h('b', { text: String(DATA.board_size) }), h('span', { text: 'protocols ranked' })),
       h('div', { class: 'kpi-item' }, h('b', { text: audit.watchlist_covered + ' / ' + audit.watchlist_size }), h('span', { text: 'watchlist covered' })),
-      h('div', { class: 'kpi-item' }, h('b', { text: v.test_median_abs_log_error.toFixed(2) }), h('span', { text: 'fitted model test error (median |log error|)' })),
-      h('div', { class: 'kpi-item' }, h('b', { text: Math.round(DATA.median_launch_odds * 100) + '%' }), h('span', { text: 'median launch odds' })),
-      h('div', { class: 'kpi-item' }, h('b', { text: String(audit.live_with_mcap) }), h('span', { text: 'live protocols set aside below' }))
+      h('div', { class: 'kpi-item' }, h('b', { text: v.test_median_abs_log_error.toFixed(2) }), h('span', { text: 'test error (median |log error|)' })),
+      h('div', { class: 'kpi-item' }, h('b', { text: Math.round(DATA.median_launch_odds * 100) + '%' }), h('span', { text: 'median launch odds' }))
     );
   }
 
@@ -320,7 +307,7 @@
         check(integ.watchlist_covered, 'watchlist ' + audit.watchlist_covered + '/' + audit.watchlist_size),
         check(integ.farm_steps_ok, 'farm steps 3-12, 20-600 chars')
       ),
-      h('p', { class: 'audit', text: 'All ' + audit.total + ' snapshot protocols are accounted for: ' + audit.board + ' on the board, ' + audit.live_with_mcap + ' live with a market cap set aside below, ' + audit.live_cex_set_aside + ' centralised exchanges set aside, ' + audit.token_no_mcap + ' with a token but no usable market cap, ' + audit.excluded_category + ' excluded by category (wrapped, staked, bridge or derivative), ' + audit.versioned + ' versioned names set aside.' })
+      h('p', { class: 'audit', text: 'All ' + audit.total + ' accounted for: ' + audit.board + ' on the board, ' + audit.live_with_mcap + ' live, ' + audit.live_cex_set_aside + ' exchanges, ' + audit.token_no_mcap + ' token but no market cap, ' + audit.excluded_category + ' excluded by category, ' + audit.versioned + ' versioned.' })
     );
   }
 
@@ -351,12 +338,30 @@
     );
   }
 
+  /** The ten best farms by expected value, above the full board: the board ranks by
+   * implied value, this strip ranks by what a farm is worth after its costs. */
+  function topEvStrip() {
+    var top = DATA.rows.slice().sort(function (a, b) { return b.expected_value_usd - a.expected_value_usd; }).slice(0, 10);
+    return h('section', { class: 'panel top-ev', 'aria-label': 'Top ten farms by expected value' },
+      h('h2', { text: 'Top 10 farms by expected value' }),
+      h('p', { class: 'sub', text: 'Implied value times launch odds, minus farm costs.' }),
+      h('ol', { class: 'top-ev-list' }, top.map(function (r, i) {
+        return h('li', null,
+          h('button', { type: 'button', onclick: function () { openDetail(r.slug); } },
+            h('b', { text: (i + 1) + '. ' + r.name }),
+            h('span', { class: 'num', text: fmtUsd(r.expected_value_usd) + ' net EV' }),
+            h('span', { class: 'sub', text: fmtUsd(r.implied_value_usd) + ' implied · ' + Math.round(r.launch_odds * 100) + '% odds' })
+          )
+        );
+      }))
+    );
+  }
+
   function boardTable() {
     var list = sortedRows(visibleRows());
     if (list.length === 0) {
       return h('div', { class: 'panel' }, h('div', { class: 'empty' },
         h('h2', { text: 'No protocol matches that filter' }),
-        h('p', { text: 'Clear the search or pick another category to see the board again.' }),
         h('button', { class: 'button primary', type: 'button', text: 'Clear filters', onclick: function () { state.q = ''; state.category = 'all'; state.watchlistOnly = false; writeHash(); render(); } })
       ));
     }
@@ -385,6 +390,8 @@
         )),
         h('td', { class: 'num', text: Math.round(r.launch_odds * 100) + '%' }),
         h('td', { class: 'num', text: fmtUsd(r.expected_value_usd) }),
+        h('td', { class: 'num', text: '$' + r.total_cost_usd }),
+        h('td', { class: 'num', text: fmtUsd(r.gross_expected_value_usd) }),
         h('td', null, h('span', { class: 'status', text: r.watchlist ? 'watchlist' : 'no token' }))
       );
       tbody.appendChild(tr);
@@ -392,7 +399,7 @@
     return h('div', { class: 'panel' },
       h('div', { class: 'table-wrap' },
         h('table', null,
-          h('caption', { class: 'sub', text: 'Pre-token protocols, strongest implied value first. Sort by Farm net EV to rank by what a farm is worth after its costs, not by the headline value. Select a row for its model, launch odds and farm plan.' }),
+          h('caption', { class: 'sub', text: 'Pre-token protocols, strongest implied value first. Sort by Farm net EV to rank by worth after costs; Farm cost is capital plus gas, Farm reward the gross expected value. Select a row for its model, odds and plan.' }),
           h('thead', null, h('tr', null,
             sortHeader('implied', 'Rank'),
             sortHeader('name', 'Protocol'),
@@ -402,6 +409,8 @@
             sortHeader('implied', 'Implied value'),
             sortHeader('odds', 'Launch odds'),
             sortHeader('expected', 'Farm net EV'),
+            sortHeader('cost', 'Farm cost'),
+            sortHeader('gross', 'Farm reward'),
             h('th', { scope: 'col', text: 'Status' })
           )),
           tbody
@@ -424,10 +433,10 @@
     });
     return h('section', { class: 'panel model' },
       h('h2', { text: 'Already launched: ' + DATA.live.length + ' live protocols with a market cap' }),
-      h('p', { class: 'sub', text: 'These protocols already have a token, so they are not farmable and they are not on the board. They are listed here so the reader can check the fitted model against real market caps, and so every snapshot protocol is accounted for.' }),
+      h('p', { class: 'sub', text: 'These protocols already have a token, so they are not farmable and not on the board. They are listed so the reader can check the fitted model against real market caps.' }),
       h('div', { class: 'table-wrap' },
         h('table', null,
-          h('caption', { class: 'sub', text: 'Token live: these protocols already trade, so their market cap is a fact, not a model. They are set aside from the pre-token ranking.' }),
+          h('caption', { class: 'sub', text: 'Already trading: market cap is a fact, not a model. Set aside from the pre-token ranking.' }),
           h('thead', null, h('tr', null, h('th', { scope: 'col', text: 'Protocol' }), h('th', { scope: 'col', text: 'TVL' }), h('th', { scope: 'col', text: '7d' }), h('th', { scope: 'col', text: 'Market cap' }), h('th', { scope: 'col', text: 'Mcap / TVL' }), h('th', { scope: 'col', text: 'Token' }))),
           tbody
         )
@@ -471,7 +480,6 @@
     return host;
   }
 
-  /** The fitted equation as one line, per the kept model's feature shape. */
   /** The fitted equation as one line. The kept model is the four-term regression (or
    * its ridge twin, which has the same shape); a future kept shape writes its own line here. */
   function formulaText() {
@@ -481,29 +489,35 @@
     return 'ln(implied value) = ' + beta[0].toFixed(3) + ' ' + f(beta[1]) + ' ln(TVL) ' + f(beta[2]) + ' tanh(7d growth / 30) ' + f(beta[3]) + ' age in years' + ridge;
   }
 
-  /** The model's terms for the panel table. The kept model is the four-term regression. */
+  /** The model's terms for the panel table: the kept model's four terms. */
   function modelTermRows() {
     var beta = fit.beta || [c.intercept, c.log_tvl, c.tanh_growth, c.age_years];
     return [
-      ['intercept', beta[0], 'The level: at TVL $1, flat growth, age zero, the price would be e^' + beta[0].toFixed(2) + '. Read with the other terms, not alone.'],
-      ['ln(TVL)', beta[1], 'Doubling TVL lifts the fitted value by about ' + Math.round((Math.pow(2, beta[1]) - 1) * 100) + '%. Sub-linear: size matters, but not one for one.'],
-      ['tanh(7d growth / 30)', beta[2], 'A hot week carries almost no signal on the cleaned pool. Radar-4 read -1.78 here; that sign was the exchange tokens in its pool, not the market.'],
-      ['age in years', beta[3], 'Each extra year shaves about ' + Math.round((1 - Math.exp(beta[3])) * 100) + '% off the fitted value once TVL is in: an old protocol that still has no token is discounted.']
+      ['intercept', beta[0], 'The level: at TVL $1, flat growth, age zero, the price would be e^' + beta[0].toFixed(2) + '.'],
+      ['ln(TVL)', beta[1], 'Doubling TVL lifts the fitted value by about ' + Math.round((Math.pow(2, beta[1]) - 1) * 100) + '% (sub-linear).'],
+      ['tanh(7d growth / 30)', beta[2], 'A hot week carries almost no signal. Radar-4 read -1.78 here; that was the exchange tokens in its pool.'],
+      ['age in years', beta[3], 'Each extra year shaves about ' + Math.round((1 - Math.exp(beta[3])) * 100) + '% off, once TVL is in: an old tokenless protocol is discounted.']
     ];
   }
 
 
-  /** What the five-split search decided, in one honest sentence. */
+  /** What the five-split search decided, in one short sentence. */
   function fiveSplitNote() {
     var v = fit.validation;
     var rows = v.five_split || [];
     if (!rows.length) return 'No stability search was run for this model.';
     var kept = rows.filter(function (s) { return s.kept; })[0];
-    if (kept) return 'Kept model: ' + kept.name + ' — it won ' + kept.wins + ' of 5 splits and moved ' + kept.rank_moves_over_10 + ' rows by more than ten ranks, clearing both bars. The base four-term model it replaces is retired, not hidden: its numbers are the first row of the table.';
+    if (kept) return 'Kept: ' + kept.name + ' — ' + kept.wins + ' of 5 wins, ' + kept.rank_moves_over_10 + ' rows moved >10 ranks. The base model is retired, not hidden.';
     var best = rows.slice().sort(function (a, b) { return b.wins - a.wins || a.mean_median - b.mean_median; })[0];
-    var lo = Math.min.apply(null, rows[0].base_medians);
-    var hi = Math.max.apply(null, rows[0].base_medians);
-    return 'No candidate cleared both bars, so the board keeps the base four-term model. Closest was ' + best.name + ': ' + best.wins + ' of 5 split wins and ' + best.rank_moves_over_10 + ' rows moved by more than ten ranks. A single split can flatter a fragile term — the base medians spread from ' + lo.toFixed(2) + ' to ' + hi.toFixed(2) + ' across quintiles — so the search asks for four wins and a quiet board before it lets a richer model in.';
+    return 'No candidate cleared both bars; the board keeps the base model. Closest: ' + best.name + ' (' + best.wins + ' of 5 wins, ' + best.rank_moves_over_10 + ' rows moved). One split can flatter a fragile term.';
+  }
+
+  /** The radar-8 fit-pool test, in one sentence. */
+  function poolNote() {
+    var pc = fit.validation.pool_comparison;
+    if (!pc) return '';
+    if (pc.kept_wide) return 'Fit pool: ' + pc.pool_dated_size + ' dated, plus ' + pc.pool_imputed_age + ' age-imputed — the wide pool won ' + pc.wins + ' of 5 splits and moved ' + pc.rank_moves_over_10 + ' rows, clearing both bars, so the board carries the ' + pc.pool_wide_size + '-protocol fit.';
+    return 'Fit pool: ' + pc.pool_dated_size + ' dated protocols. The wide pool (' + pc.pool_wide_size + ', ' + pc.pool_imputed_age + ' age-imputed) won ' + pc.wins + ' of 5 splits and moved ' + pc.rank_moves_over_10 + ' rows >10 ranks, so the board keeps the ' + pc.pool_dated_size + '.';
   }
 
   function modelPanel() {
@@ -511,30 +525,30 @@
     var odds = DATA.odds;
     var ov = odds.validation;
     var oddsTerms = [
-      ['intercept', odds.coefficients[0], 'The level: a protocol at age zero, TVL $1, flat growth, in the reference category ' + odds.reference_category + '.'],
-      ['age in years', odds.coefficients[1], 'Each extra year raises the log-odds of launching by about ' + odds.coefficients[1].toFixed(2) + ': older protocols launch more often.'],
-      ['ln(TVL)', odds.coefficients[2], 'Size barely moves the odds once age is in: doubling TVL changes the log-odds by only ' + (odds.coefficients[2] * Math.log(2)).toFixed(2) + '.'],
-      ['tanh(7d growth / 30)', odds.coefficients[3], 'A hot week argues against a launch: fast TVL growth in the last week comes with lower odds, once age and size are held fixed.']
+      ['intercept', odds.coefficients[0], 'The level: age zero, TVL $1, flat growth, reference category ' + odds.reference_category + '.'],
+      ['age in years', odds.coefficients[1], 'Older protocols launch more often.'],
+      ['ln(TVL)', odds.coefficients[2], 'Size barely moves the odds once age is in.'],
+      ['tanh(7d growth / 30)', odds.coefficients[3], 'A hot week argues against a launch, age and size held fixed.']
     ];
     odds.categories.forEach(function (cat, i) {
-      oddsTerms.push([cat + ' (vs ' + odds.reference_category + ')', odds.coefficients[4 + i], 'Category shift in log-odds against the reference category ' + odds.reference_category + '.']);
+      oddsTerms.push([cat + ' (vs ' + odds.reference_category + ')', odds.coefficients[4 + i], 'Shift in log-odds vs ' + odds.reference_category + '.']);
     });
     if (odds.features === 'extended') {
       var nCat = odds.categories.length;
-      oddsTerms.push(['log1p(chain count)', odds.coefficients[4 + nCat], 'Each extra chain raises the log-odds: a protocol live on more chains launches more often.']);
+      oddsTerms.push(['log1p(chain count)', odds.coefficients[4 + nCat], 'More chains, higher odds.']);
       odds.categories.forEach(function (cat, i) {
-        oddsTerms.push([cat + ' x age (vs ' + odds.reference_category + ')', odds.coefficients[5 + nCat + i], 'How fast this category\u2019s launch rate rises with age, against the reference category.']);
+        oddsTerms.push([cat + ' x age (vs ' + odds.reference_category + ')', odds.coefficients[5 + nCat + i], 'How fast this category\u2019s launch rate rises with age vs ' + odds.reference_category + '.']);
       });
     }
     var termRows = modelTermRows();
     var validRows = [
       ['Random 80/20 split', v.train_size + ' train / ' + v.test_size + ' test, by slug hash', v.test_median_abs_log_error, v.test_mean_abs_log_error, v.test_r2],
-      ['Leave-one-category-out', v.loco_protocols + ' protocols held out whole, ' + v.loco_categories + ' categories', v.loco_median_abs_log_error, v.loco_mean_abs_log_error, v.loco_r2],
-      ['Leave-one-out', v.pool_size + ' refits, one protocol out at a time', v.loo_median_abs_log_error, null, v.loo_r2]
+      ['Leave-one-category-out', v.loco_protocols + ' held out, ' + v.loco_categories + ' categories', v.loco_median_abs_log_error, v.loco_mean_abs_log_error, v.loco_r2],
+      ['Leave-one-out', v.pool_size + ' refits', v.loo_median_abs_log_error, null, v.loo_r2]
     ];
     return h('section', { class: 'panel model', id: 'model-panel' },
       h('h2', { text: 'How the implied value is fitted — and how it is checked' }),
-      h('p', { class: 'sub', text: 'The model is one linear regression, fitted at runtime on the ' + v.pool_size + ' live-token protocols that have a market cap, a TVL, a 7-day change and a listing date. Centralised exchanges are set aside from the fit (' + v.pool_excluded_cex + ' protocols): an exchange token prices the exchange, not the TVL on its books, and the board never scores an exchange. The target is log market cap. The fit reports its own held-out numbers, and the board uses the same fit for every row.' }),
+      h('p', { class: 'sub', text: 'One linear regression, fitted at runtime on the ' + v.pool_size + ' live-token protocols with a market cap, a TVL, a 7-day change and a listing date' + (v.pool_imputed_age ? ', plus ' + v.pool_imputed_age + ' more tested with age imputed at the pool median and not kept (see below)' : '') + '. Exchanges are set aside (' + v.pool_excluded_cex + '): an exchange token prices the exchange, not its TVL. The target is log market cap; the board uses the same fit for every row.' }),
       h('div', { class: 'formula' },
         h('div', null, h('b', { text: formulaText() }))
       ),
@@ -561,41 +575,41 @@
               );
             }))
           ),
-          h('p', { class: 'note', text: 'Train R² ' + v.train_r2.toFixed(2) + '. The held-out R² values sit near or below zero because one or two protocols carry market caps that ignore TVL entirely (a token locker at 19x its TVL, an allocator at 0.6% of it); squares let those two dominate, so the median is the robust read. ' + (fit.features === 'base' ? 'The value model is unchanged from radar-5: the same four terms, fitted on the same pool, so the medians are the same as radar-5\u2019s (0.95 random, 0.82 by category, 0.97 leave-one-out). Radar-6 tried fourteen alternatives to beat it and kept none; radar-7 re-tested the close calls on five splits and kept none either — see the table below.' : 'The kept model is ' + v.kept_model + ': it cleared the five-split search below, so these medians are its own, not the base model\u2019s.') })
+          h('p', { class: 'note', text: 'Train R² ' + v.train_r2.toFixed(2) + '. Held-out R² is near or below zero: one or two protocols carry market caps that ignore TVL (a locker at 19x, an allocator at 0.6%); squares let those two dominate, so the median is the robust read. ' + (fit.features === 'base' ? 'Unchanged from radar-5: same four terms, same pool, same medians (0.95 / 0.82 / 0.97). Radar-6 tried fourteen alternatives and kept none; radar-7 re-tested the close calls on five splits and kept none; radar-8 tested a wider fit pool and kept the 87 — see below.' : 'The kept model is ' + v.kept_model + ': it cleared the five-split search below, so these medians are its own.') })
         )
       ),
       h('div', null,
         h('h3', { text: 'Five-split stability search: would a richer model survive five splits?' }),
-        h('p', { class: 'sub', text: 'Each candidate is fitted on four hash quintiles and tested on the fifth, five times over. A candidate replaces the base model only when it wins the median |log error| on at least four of the five splits AND moves fewer than 20 of the 203 board rows by more than ten ranks. The base model\u2019s split medians are ' + (v.five_split && v.five_split.length ? v.five_split[0].base_medians.map(function (m) { return m.toFixed(2); }).join(' / ') : '—') + '.' }),
+        h('p', { class: 'sub', text: 'Each candidate is fitted on four hash quintiles and tested on the fifth, five times over. It replaces the base only on four of five split wins AND fewer than 20 of 203 rows moved by more than ten ranks. Base split medians: ' + (v.five_split && v.five_split.length ? v.five_split[0].base_medians.map(function (m) { return m.toFixed(2); }).join(' / ') : '—') + '.' }),
         h('table', { class: 'diag-table' },
-          h('thead', null, h('tr', null, h('th', { scope: 'col', text: 'Candidate' }), h('th', { scope: 'col', text: 'Split medians' }), h('th', { scope: 'col', text: 'Wins' }), h('th', { scope: 'col', text: 'Mean' }), h('th', { scope: 'col', text: 'Rows moved >10' }), h('th', { scope: 'col', text: 'Kept?' }))),
+          h('thead', null, h('tr', null, h('th', { scope: 'col', text: 'Candidate' }), h('th', { scope: 'col', text: 'Split medians' }), h('th', { scope: 'col', text: 'Wins' }), h('th', { scope: 'col', text: 'Rows moved' }), h('th', { scope: 'col', text: 'Kept?' }))),
           h('tbody', null, (v.five_split || []).map(function (s) {
             return h('tr', null,
               h('td', null, h('b', { text: s.name })),
               h('td', { class: 'num', text: s.split_medians.map(function (m) { return m.toFixed(2); }).join(' / ') }),
               h('td', { class: 'num', text: s.wins + ' / 5' }),
-              h('td', { class: 'num', text: s.mean_median.toFixed(2) }),
               h('td', { class: 'num', text: String(s.rank_moves_over_10) }),
               h('td', { class: 'num', text: s.kept ? 'kept' : 'no' })
             );
           }))
         ),
-        h('p', { class: 'note', text: fiveSplitNote() })
+        h('p', { class: 'note', text: fiveSplitNote() }),
+        h('p', { class: 'note', text: poolNote() })
       ),
       h('div', null,
         h('h3', { text: 'Calibration: leave-one-out predictions vs actual market caps' }),
         calibrationChart(),
-        h('p', { class: 'note', text: 'Each dot is one of the ' + v.pool_size + ' fitted protocols, predicted by a model that never saw it. The dashed line is perfect calibration. Dots off the line are the protocols whose market cap the snapshot cannot explain — supply, vesting and sentiment, which the snapshot never sees. Red dots miss by more than 1.5 in log terms (about 4.5x).' })
+        h('p', { class: 'note', text: 'Each dot is one of the ' + v.pool_size + ' fitted protocols, predicted by a model that never saw it. The dashed line is perfect calibration; dots off it are market caps the snapshot cannot explain. Red dots miss by more than 1.5 in log terms (about 4.5x).' })
       ),
       h('div', null,
         h('h3', { text: 'Terms that were fitted and dropped' }),
         h('ul', { class: 'rejected' }, v.rejected.map(function (r) {
-          return h('li', null, h('b', { text: r.name + ': ' }), 'random-split median ' + r.test_median_abs_log_error.toFixed(2) + ', leave-one-category-out median ' + r.loco_median_abs_log_error.toFixed(2) + ', leave-one-out median ' + r.loo_median_abs_log_error.toFixed(2) + ' (base model: ' + v.test_median_abs_log_error.toFixed(2) + ' / ' + v.loco_median_abs_log_error.toFixed(2) + ' / ' + v.loo_median_abs_log_error.toFixed(2) + ') — ' + r.note + '.');
+          return h('li', null, h('b', { text: r.name + ': ' }), 'random-split median ' + r.test_median_abs_log_error.toFixed(2) + ', leave-one-category-out median ' + r.loco_median_abs_log_error.toFixed(2) + ', leave-one-out median ' + r.loo_median_abs_log_error.toFixed(2) + ' — ' + r.note + '.');
         }))
       ),
       h('div', null,
         h('h3', { text: 'Launch odds: a logistic model, not a table' }),
-        h('p', { class: 'sub', text: 'Radar-5 read launch odds off an age-bucket by TVL-tier table. Radar-6 fits one logistic regression per protocol on launch (issued a token or not) over all 758 snapshot protocols, with age, log TVL, 7-day growth and category as features, and validates it against the old table on held-out splits. Radar-7 tries two more features — how many chains a protocol runs on, and a category-by-age interaction — and keeps them only when the five-fold Brier score improves: ' + (odds.features === 'extended' ? 'it does, ' + ov.five_fold_extended_logistic_brier.toFixed(3) + ' against the plain logistic\u2019s ' + ov.five_fold_logistic_brier.toFixed(3) + ', so the board carries the extended odds.' : 'it does not (' + ov.five_fold_extended_logistic_brier.toFixed(3) + ' against the plain logistic\u2019s ' + ov.five_fold_logistic_brier.toFixed(3) + '), so the board keeps the plain logistic odds.') }),
+        h('p', { class: 'sub', text: 'Radar-5 read odds off an age-by-TVL table. Radar-6 fits one logistic regression on launch over all 758 protocols, with age, log TVL, 7-day growth and category. Radar-7 adds chain count and a category-by-age interaction, kept only when the five-fold Brier improves: ' + (odds.features === 'extended' ? 'it does, ' + ov.five_fold_extended_logistic_brier.toFixed(3) + ' against the plain logistic\u2019s ' + ov.five_fold_logistic_brier.toFixed(3) + ', so the board carries the extended odds.' : 'it does not (' + ov.five_fold_extended_logistic_brier.toFixed(3) + ' against the plain logistic\u2019s ' + ov.five_fold_logistic_brier.toFixed(3) + '), so the board keeps the plain logistic odds.') }),
         h('table', { class: 'diag-table' },
           h('thead', null, h('tr', null, h('th', { scope: 'col', text: 'Term' }), h('th', { scope: 'col', text: 'Coefficient' }), h('th', { scope: 'col', text: 'What it says' }))),
           h('tbody', null, oddsTerms.map(function (r) {
@@ -603,15 +617,14 @@
           }))
         ),
         h('table', { class: 'diag-table' },
-          h('thead', null, h('tr', null, h('th', { scope: 'col', text: 'Odds model' }), h('th', { scope: 'col', text: 'Brier, fixed split' }), h('th', { scope: 'col', text: 'Brier, five-fold' }), h('th', { scope: 'col', text: 'Log loss, fixed' }))),
+          h('thead', null, h('tr', null, h('th', { scope: 'col', text: 'Odds model' }), h('th', { scope: 'col', text: 'Brier (fixed)' }), h('th', { scope: 'col', text: 'Brier (5-fold)' }), h('th', { scope: 'col', text: 'Log loss' }))),
           h('tbody', null,
-            h('tr', null, h('td', null, h('b', { text: 'Logistic (age, size, growth, category)' })), h('td', { class: 'num', text: ov.logistic_brier.toFixed(3) }), h('td', { class: 'num', text: ov.five_fold_logistic_brier.toFixed(3) }), h('td', { class: 'num', text: ov.logistic_logloss.toFixed(3) })),
-            h('tr', null, h('td', null, h('b', { text: 'Extended logistic (+ chains, category x age)' })), h('td', { class: 'num', text: ov.extended_logistic_brier.toFixed(3) }), h('td', { class: 'num', text: ov.five_fold_extended_logistic_brier.toFixed(3) }), h('td', { class: 'num', text: ov.extended_logistic_logloss.toFixed(3) })),
-            h('tr', null, h('td', null, h('b', { text: 'Old age-by-TVL table' })), h('td', { class: 'num', text: ov.table_brier.toFixed(3) }), h('td', { class: 'num', text: ov.five_fold_table_brier.toFixed(3) }), h('td', { class: 'num', text: ov.table_logloss.toFixed(3) })),
-            h('tr', null, h('td', null, h('b', { text: 'Global launch rate alone' })), h('td', { class: 'num', text: ov.global_brier.toFixed(3) }), h('td', { class: 'num', text: '—' }), h('td', { class: 'num', text: '—' }))
+            h('tr', null, h('td', null, h('b', { text: 'Logistic' })), h('td', { class: 'num', text: ov.logistic_brier.toFixed(3) }), h('td', { class: 'num', text: ov.five_fold_logistic_brier.toFixed(3) }), h('td', { class: 'num', text: ov.logistic_logloss.toFixed(3) })),
+            h('tr', null, h('td', null, h('b', { text: 'Extended logistic' })), h('td', { class: 'num', text: ov.extended_logistic_brier.toFixed(3) }), h('td', { class: 'num', text: ov.five_fold_extended_logistic_brier.toFixed(3) }), h('td', { class: 'num', text: ov.extended_logistic_logloss.toFixed(3) })),
+            h('tr', null, h('td', null, h('b', { text: 'Old table' })), h('td', { class: 'num', text: ov.table_brier.toFixed(3) }), h('td', { class: 'num', text: ov.five_fold_table_brier.toFixed(3) }), h('td', { class: 'num', text: ov.table_logloss.toFixed(3) }))
           )
         ),
-        h('p', { class: 'note', text: 'Lower Brier is better. The board carries the ' + (odds.features === 'extended' ? 'extended' : 'plain') + ' logistic: five-fold Brier ' + (odds.features === 'extended' ? ov.five_fold_extended_logistic_brier.toFixed(3) : ov.five_fold_logistic_brier.toFixed(3)) + ' against the old table\u2019s ' + ov.five_fold_table_brier.toFixed(3) + ' and the global rate\u2019s ' + ov.global_brier.toFixed(3) + ' on the fixed split. A protocol with no listing date takes the pool\u2019s median age (' + Math.round(odds.median_age_days) + ' days), the same imputation the fit uses.' })
+        h('p', { class: 'note', text: 'Lower Brier is better. The board carries the ' + (odds.features === 'extended' ? 'extended' : 'plain') + ' logistic (five-fold Brier ' + (odds.features === 'extended' ? ov.five_fold_extended_logistic_brier.toFixed(3) : ov.five_fold_logistic_brier.toFixed(3)) + ', old table ' + ov.five_fold_table_brier.toFixed(3) + ', global rate ' + ov.global_brier.toFixed(3) + ' fixed). No listing date takes the pool median age (' + Math.round(odds.median_age_days) + ' days), the same imputation as the fit.' })
       ),
       h('p', { class: 'sub', text: 'The model is rough — the median held-out miss is about a factor of ' + Math.exp(v.test_median_abs_log_error).toFixed(1) + 'x — so treat each implied value as an order of magnitude, not a price.' })
     );
@@ -650,7 +663,7 @@
         h('div', null, h('span', { text: 'total farm costs' }), h('b', { class: 'num', text: '$' + row.total_cost_usd })),
         h('div', { class: 'net-ev' }, h('span', { text: 'net expected value, after all costs' }), h('b', { class: 'num', text: fmtUsd(row.expected_value_usd) }))
       ),
-      h('p', { class: 'note', text: 'Model ' + fit.version + ': the same fit scores every protocol. The page recomputes this row as ' + fmtUsd(recomputed) + (recomputed === row.implied_value_usd ? ', the same number board.json carries.' : ', which differs from the board: the data would be stale.') + ' Odds come from a logistic regression fitted on all 758 snapshot protocols (age, log TVL, 7-day growth, category' + (DATA.odds.features === 'extended' ? ', chain count, category-by-age' : '') + '), not from a guess: older protocols launch more often, and a hot week argues against it.' })
+      h('p', { class: 'note', text: 'Model ' + fit.version + ': the same fit scores every protocol. The page recomputes this row as ' + fmtUsd(recomputed) + (recomputed === row.implied_value_usd ? ', the same number board.json carries.' : ', which differs from the board: the data would be stale.') + ' Odds are logistic on all 758 protocols.' })
     ));
     dialog.appendChild(h('section', { class: 'detail-section' },
       h('h3', { text: 'Farm plan' }),
@@ -677,6 +690,7 @@
     shell.appendChild(kpiStrip());
     shell.appendChild(integrityStrip());
     shell.appendChild(controls());
+    shell.appendChild(topEvStrip());
     shell.appendChild(boardTable());
     shell.appendChild(modelPanel());
     shell.appendChild(liveTable());

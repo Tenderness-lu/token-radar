@@ -2,7 +2,7 @@
 
 The board's model is one fitted regression, not a made-up multiple. This file
 prices the board's top protocol term by term, then lists the ten best farms by
-expected value (implied value x launch odds, minus farm costs).
+expected value.
 
 ## Sentora Curator, rank 1 (Risk Curators, Ethereum / Ink / Solana / Tempo)
 
@@ -46,6 +46,6 @@ purpose. Sentora Curator is #1 by implied value but only #21 by expected value
 keeps most of its $38.6M. Sort the board by Farm net EV to farm by expected
 value instead of headline value.
 
-Validation (held out, same fit for every row): random 80/20 median |log error|
-0.95, leave-one-category-out 0.82, leave-one-out 0.97. Launch odds Brier:
-extended logistic 0.201 five-fold, plain logistic 0.202, old table 0.223.
+Validation: random 80/20 median |log error| 0.95, leave-one-category-out 0.82,
+leave-one-out 0.97. Odds Brier (five-fold): extended 0.201, plain 0.202, old
+table 0.223.
